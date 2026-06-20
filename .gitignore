@@ -1,0 +1,37 @@
+# Dataset — large raw files, never commit
+dataset/raw data/
+hf_cache/
+hf_hub_cache/
+hf_home/
+torch_cache/
+
+# Checkpoints — large binary model weights, never commit
+checkpoints/
+*.pt
+*.pth
+*.h5
+*.ckpt
+*.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs / experiment tracking
+logs/
+runs/
+outputs/
+wandb/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+.env
