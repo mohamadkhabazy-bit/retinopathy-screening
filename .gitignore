@@ -5,10 +5,16 @@ hf_hub_cache/
 hf_home/
 torch_cache/
 
-# Checkpoints — large binary model weights, never commit
-checkpoints/
+
+
+# Ignore ALL files inside the checkpoints folder
+checkpoints/*
+
+# EXCEPT for the final best model (whitelist it)
+!checkpoints/best_model.pth
+
+# Ignore other large binary formats just in case
 *.pt
-*.pth
 *.h5
 *.ckpt
 *.pkl
