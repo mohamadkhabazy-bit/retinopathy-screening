@@ -24,33 +24,16 @@ RESUME_PATH     = os.path.join(CHECKPOINT_DIR, "resume_p1.pth")
 BATCH_SIZE          = 8
 ACCUMULATION_STEPS  = 2
 
-# ✅ CHANGED: 12 -> 30. A frozen backbone with only CBAM+head training
-# needs more epochs to fully converge, especially now paired with a
-# cosine schedule that needs the full epoch budget to decay smoothly.
 EPOCHS              = 30
 
-# ✅ CHANGED: 5 -> 10. Gives the run more room before stopping, now that
-# it has a longer cosine schedule to follow instead of a reactive
-# plateau-based one.
 ES_PATIENCE         = 10
 
 LEARNING_RATE       = 3e-4
 
-# ✅ CHANGED: 0.0005 -> 0.01. Stronger weight decay, paired with the
-# higher dropout below, to add more regularization — appropriate given
-# this dataset is small and Phase 2 fine-tuning is no longer in the
-# pipeline to help generalization later.
 WEIGHT_DECAY        = 0.01
 
-# ✅ CHANGED: 0.4 -> 0.5. Slightly stronger dropout in the head, for the
-# same regularization reasoning as WEIGHT_DECAY above.
 DROPOUT             = 0.5
 
-# ✅ NEW: cosine annealing with linear warmup replaces ReduceLROnPlateau
-# for Phase 1 only (Phase 2's train_phase2.py is untouched and still
-# uses the default "plateau" scheduler). See model.py's train() docstring
-# for the trade-off this introduces: a fixed, non-reactive schedule in
-# exchange for smoother, more predictable decay over a longer run.
 SCHEDULER_TYPE      = "cosine"
 WARMUP_EPOCHS       = 3
 
@@ -100,12 +83,7 @@ def main():
     class_weights = get_class_weights(train_ds["label"]).to(device)
     loss_fn = get_loss_fn(class_weights, alpha=0.7).to(device)
 
-    # freeze_backbone() sets requires_grad=False on every backbone param.
-    # model.py's train_one_epoch also calls freeze_bn_stats(model) right
-    # after model.train() every epoch, which locks every backbone
-    # BatchNorm layer's running_mean/running_var to eval-mode behavior
-    # (since all of them are frozen here) — stopping the ImageNet
-    # pretrained statistics from drifting away during Phase 1.
+
     freeze_backbone(model)
     model_summary(model)
 
