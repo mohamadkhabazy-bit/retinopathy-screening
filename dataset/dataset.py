@@ -1,9 +1,5 @@
 # %%
 import os
-
-# ✅ FIXED: Force ALL HuggingFace caching onto E: — must be set
-# BEFORE `datasets` is imported, otherwise it's too late and the
-# library will have already resolved the default C: cache paths.
 os.environ["HF_HOME"]            = r"E:\retinopathy-screening\hf_home"
 os.environ["HF_DATASETS_CACHE"]  = r"E:\retinopathy-screening\hf_cache"
 os.environ["HF_HUB_CACHE"]       = r"E:\retinopathy-screening\hf_hub_cache"
@@ -95,19 +91,7 @@ def extract_green_channel(img: np.ndarray) -> np.ndarray:
 # ──────────────────────────────────────────────────────────────
 # Augmentations
 # ──────────────────────────────────────────────────────────────
-#
-# ✅ CHANGED: A.Resize(image_size, image_size) replaced with
-# A.LongestMaxSize + A.PadIfNeeded in all three blocks (val, majority,
-# minority). Plain Resize forces a non-square fundus image into a
-# square, stretching/squishing the blood vessels and lesions along
-# whichever axis was compressed more. LongestMaxSize scales the image
-# down so its longest side fits image_size while keeping the original
-# aspect ratio, then PadIfNeeded adds black borders to reach a square
-# image_size x image_size — verified empirically that this preserves
-# the true aspect ratio of the retinal content exactly, instead of
-# distorting it. Applied identically to all three splits so train and
-# val see the same kind of geometry, just with different augmentation
-# on top for train.
+
 def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
     assert split in ("val", "test", "majority", "minority"), \
         f"Invalid split: {split}"
@@ -135,13 +119,7 @@ def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
         ])
 
     if split == "minority":
-        # ✅ CHANGED (per your earlier edit, kept as-is here): GridDistortion,
-        # ElasticTransform, and CoarseDropout removed — these warp/occlude
-        # fine anatomical structure and can hide or distort the exact tiny
-        # lesions (microaneurysms, small hemorrhages) that separate
-        # neighboring DR grades. ShiftScaleRotate limits tightened
-        # (shift/scale 0.1/0.15 -> 0.05/0.05, rotate 20 -> 15) to keep
-        # geometric augmentation gentler for the same reason.
+
         return A.Compose([
             A.LongestMaxSize(max_size=image_size),
             A.PadIfNeeded(min_height=image_size, min_width=image_size,
