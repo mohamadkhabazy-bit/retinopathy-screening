@@ -123,6 +123,48 @@ class CBAM(nn.Module):
 
 
 # ──────────────────────────────────────────────────────────────
+# GeM — Generalized Mean Pooling
+# ──────────────────────────────────────────────────────────────
+#
+# Plain average pooling (nn.AdaptiveAvgPool2d) weights every spatial
+# location equally when collapsing the feature map down to one vector.
+# In DR grading, the most diagnostically important signal (a tiny
+# microaneurysm or hemorrhage) can occupy a very small fraction of the
+# image, so averaging dilutes it among a much larger area of
+# unremarkable background tissue.
+#
+# GeM raises activations to a learnable power p before averaging, then
+# takes the same power's root afterward. As p grows past 1, this
+# increasingly emphasizes the largest activations in the feature map
+# (approaching max-pooling as p -> infinity) rather than treating every
+# location equally — letting the network learn how much to lean toward
+# "pay attention to the strongest signal" vs "average everything",
+# rather than that choice being fixed in advance.
+#
+# Verified: forward pass produces no NaN, and gradients correctly flow
+# back to the learnable p parameter during backward().
+#
+# Note: if you ever see NaN losses after adding this under mixed
+# precision (torch.amp.autocast), the most common fix is to compute
+# the GeM forward pass outside autocast, e.g.:
+#   with torch.amp.autocast("cuda", enabled=False):
+#       pooled = self.pool(features.float())
+# since x.pow(p) for a growing learnable p can be numerically less
+# stable in fp16 than in fp32.
+class GeM(nn.Module):
+    def __init__(self, p: float = 3.0, eps: float = 1e-6):
+        super().__init__()
+        self.p   = nn.Parameter(torch.ones(1) * p)  # learnable
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return nn.functional.adaptive_avg_pool2d(
+            x.clamp(min=self.eps).pow(self.p),
+            (1, 1)
+        ).pow(1.0 / self.p)
+
+
+# ──────────────────────────────────────────────────────────────
 # Model
 # ──────────────────────────────────────────────────────────────
 
@@ -136,7 +178,7 @@ class RetinopathyModel(nn.Module):
         super().__init__()
 
         self.backbone = timm.create_model(
-            "efficientnet_b0",
+            "efficientnet_b2",
             pretrained=pretrained,
             num_classes=0,
             global_pool=""
@@ -144,7 +186,10 @@ class RetinopathyModel(nn.Module):
 
         in_channels = self.backbone.num_features
         self.cbam   = CBAM(in_channels)
-        self.pool   = nn.AdaptiveAvgPool2d(1)
+        # ✅ CHANGED: nn.AdaptiveAvgPool2d(1) -> GeM(). See GeM class
+        # docstring above for why. This is a drop-in replacement —
+        # same input/output shape, same call signature.
+        self.pool   = GeM()
 
         self.head = nn.Sequential(
             nn.Flatten(),
@@ -181,6 +226,69 @@ def model_summary(model: nn.Module) -> dict:
     stats = count_trainable_parameters(model)
     print("───────────────────────────────────────────────────────\n")
     return stats
+
+
+# ──────────────────────────────────────────────────────────────
+# BatchNorm running-stats freeze
+# ──────────────────────────────────────────────────────────────
+#
+# BUG THIS FIXES: nn.BatchNorm*d's running_mean/running_var update as a
+# side effect of any forward pass while the module is in .train() mode —
+# this is controlled entirely by .training, NOT by requires_grad. Setting
+# requires_grad=False on a BN layer's weight/bias (which freeze_backbone
+# and unfreeze_last_blocks do, since they freeze via model.backbone /
+# block .parameters()) stops the OPTIMIZER from updating those two
+# tensors, but does nothing to stop running_mean/running_var from
+# silently drifting away from the pretrained ImageNet statistics on
+# every single forward pass, every epoch, for as long as the layer
+# stays "frozen". Verified empirically: a BN layer with requires_grad
+# forced False on both weight and bias still updates running_mean/
+# running_var after a single forward pass in .train() mode.
+#
+# This matters for Phase 1 especially: the ENTIRE backbone is frozen
+# there, so every BN layer drifts for the full duration of Phase 1,
+# before Phase 2 ever touches anything. Phase 2 then inherits a backbone
+# whose normalization statistics no longer match the pretrained weights
+# they were learned alongside — no amount of Phase 2 hyperparameter
+# tuning fixes statistics that already drifted during Phase 1.
+#
+# THE FIX: after model.train() (which resets ALL submodules, including
+# frozen ones, back to train-mode BN behavior), walk the module tree and
+# force any BatchNorm layer whose parameters are ALL frozen back into
+# .eval() mode. In .eval() mode, BN normalizes using the stored running
+# stats instead of the current batch's stats — both halting further
+# drift AND making the frozen backbone's output deterministic per input
+# again (matching how a properly-frozen pretrained backbone should
+# behave), rather than fluctuating with whatever is in the current
+# mini-batch.
+#
+# This must be called every epoch, immediately after model.train(),
+# because model.train() unconditionally flips every submodule back to
+# train mode and would otherwise silently undo this fix on each call.
+def freeze_bn_stats(module: nn.Module) -> None:
+    """
+    Locks BatchNorm running_mean/running_var for any BN layer whose
+    parameters are currently frozen (requires_grad=False), regardless
+    of the parent model's .train()/.eval() state.
+
+    Must be called every epoch, right after model.train() — because
+    model.train() resets ALL submodules (including frozen ones) back
+    to training-mode BN behavior, undoing this fix if not reapplied.
+
+    Correctly handles every phase:
+      - Phase 1 (freeze_backbone): entire backbone frozen → all backbone
+        BN layers get locked to eval mode.
+      - Phase 2 (unfreeze_last_blocks): only the still-frozen early
+        stages get locked; the stages you deliberately unfroze keep
+        adapting their BN stats normally, alongside their now-trainable
+        conv weights, which is exactly what you want there.
+      - Phase 3 / unfreeze_all: every parameter is trainable, so this
+        is a no-op — no BN layer gets locked, all of them keep adapting.
+    """
+    for m in module.modules():
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            if all(not p.requires_grad for p in m.parameters()):
+                m.eval()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -240,7 +348,7 @@ def unfreeze_all(model: RetinopathyModel) -> None:
 def set_finetune_lr(optimizer: torch.optim.Optimizer, lr: float = 1e-5) -> None:
     for group in optimizer.param_groups:
         group["lr"] = lr
-    print(f"  [set_finetune_lr] All param groups → LR = {lr:.2e}")
+    print(f"  [set_finetune_lr] All param groups -> LR = {lr:.2e}")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -340,7 +448,7 @@ class EarlyStopping:
     def step(self, current_qwk: float) -> bool:
         if current_qwk > self.best_qwk + self.min_delta:
             if self.verbose:
-                print(f"  [EarlyStopping] QWK improved: {self.best_qwk:.4f} → {current_qwk:.4f}")
+                print(f"  [EarlyStopping] QWK improved: {self.best_qwk:.4f} -> {current_qwk:.4f}")
             self.best_qwk = current_qwk
             self.counter  = 0
         else:
@@ -366,7 +474,7 @@ class ModelCheckpoint:
     def step(self, model: nn.Module, current_qwk: float) -> bool:
         if current_qwk > self.best_qwk:
             if self.verbose:
-                print(f"  [Checkpoint] QWK improved: {self.best_qwk:.4f} → {current_qwk:.4f} — saving.")
+                print(f"  [Checkpoint] QWK improved: {self.best_qwk:.4f} -> {current_qwk:.4f} — saving.")
             self.best_qwk = current_qwk
             torch.save(model.state_dict(), self.save_path)
             return True
@@ -383,15 +491,19 @@ def save_full_checkpoint(
     scheduler,
     epoch: int,
     best_qwk: float,
-    path: str
+    path: str,
+    extra: dict = None,
 ) -> None:
-    torch.save({
+    payload = {
         "epoch":     epoch,
         "model":     model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "best_qwk":  best_qwk,
-    }, path)
+    }
+    if extra:
+        payload.update(extra)
+    torch.save(payload, path)
 
 
 def load_full_checkpoint(
@@ -399,29 +511,34 @@ def load_full_checkpoint(
     optimizer: torch.optim.Optimizer,
     path: str,
     device: torch.device
-) -> tuple[int, float, dict]:
+) -> tuple[int, float, dict, dict]:
     """
-    Returns the raw scheduler state dict (not a loaded scheduler object)
-    so it can be fed into train()'s `scheduler_state` parameter — train()
-    builds its own scheduler internally and applies this state to it.
+    Returns (epoch, best_qwk, scheduler_state_dict, full_checkpoint_dict).
 
-    ✅ FIXED: torch.load() now defaults to weights_only=True (a PyTorch
-    2.6+ security change), which blocks unpickling the numpy-derived
-    values inside optimizer/scheduler state dicts. weights_only=False
-    is safe here specifically because this checkpoint was created by
-    our own save_full_checkpoint() on this same machine — never load a
-    checkpoint from an untrusted/external source with weights_only=False.
+    The raw scheduler state dict is returned separately (not a loaded
+    scheduler object) so it can be fed into train()'s `scheduler_state`
+    parameter — train() builds its own scheduler internally and applies
+    this state to it.
+
+    The full checkpoint dict is also returned so callers can pull out
+    any extra fields they stored at save time (e.g. num_blocks for
+    Phase 2 resume consistency) without needing a second disk read.
+
+    weights_only=False is safe here specifically because this checkpoint
+    was created by our own save_full_checkpoint() on this same machine —
+    never load a checkpoint from an untrusted/external source with
+    weights_only=False.
     """
     ckpt = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
     print(f"  [Resume] Restored from epoch {ckpt['epoch']} | best QWK: {ckpt['best_qwk']:.4f}")
-    return ckpt["epoch"], ckpt["best_qwk"], ckpt["scheduler"]
+    return ckpt["epoch"], ckpt["best_qwk"], ckpt["scheduler"], ckpt
 
 
 def load_best_model(model: nn.Module, checkpoint_path: str, device: torch.device) -> nn.Module:
     """
-    ✅ FIXED: same weights_only=True default issue as load_full_checkpoint.
+    Same weights_only=True default issue as load_full_checkpoint.
     Safe here for the same reason — checkpoint generated locally by us.
     """
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=False))
@@ -454,6 +571,7 @@ def train_one_epoch(
     batch of size (batch_size * accumulation_steps) would produce.
     """
     model.train()
+    freeze_bn_stats(model)   # ✅ re-lock frozen-stage BN stats — model.train() above just reset them
     running_loss = 0.0
     optimizer.zero_grad(set_to_none=True)
 
@@ -535,17 +653,52 @@ def train(
     max_grad_norm: float = 1.0,
     scheduler_state: dict = None,
     accumulation_steps: int = 1,
+    checkpoint_extra: dict = None,
+    scheduler_type: str = "plateau",
+    warmup_epochs: int = 3,
 ) -> dict:
+    """
+    checkpoint_extra: optional dict of extra fields to persist into every
+    resume checkpoint (e.g. {"num_blocks": 2} for Phase 2), so a later
+    resume can read back the exact config that was used, instead of a
+    caller having to hardcode it twice and risk it drifting out of sync.
+
+    scheduler_type: "plateau" (default, unchanged behavior — used by
+    Phase 2) or "cosine" (new — linear warmup for `warmup_epochs`, then
+    cosine decay down to near-zero over the remaining epochs). Unlike
+    "plateau", "cosine" follows a fixed schedule decided in advance — it
+    does not react to whether QWK is actually improving. That's a real
+    trade-off: smoother and less prone to getting stuck waiting on a
+    noisy metric, but it can't speed up, slow down, or hold steady if
+    training behaves unusually partway through, the way "plateau" can.
+    """
 
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=lr_factor, patience=lr_patience,
-    )
+    assert scheduler_type in ("plateau", "cosine"), \
+        f"scheduler_type must be 'plateau' or 'cosine', got {scheduler_type!r}"
+
+    if scheduler_type == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", factor=lr_factor, patience=lr_patience,
+        )
+    else:  # "cosine"
+        cosine_epochs = max(num_epochs - warmup_epochs, 1)
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, total_iters=warmup_epochs
+        )
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cosine_epochs, eta_min=1e-6
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs],
+        )
 
     if scheduler_state is not None:
         scheduler.load_state_dict(scheduler_state)
-        print("  [Resume] Scheduler plateau-tracking state restored.")
+        print("  [Resume] Scheduler state restored.")
 
     early_stopping          = EarlyStopping(patience=es_patience, verbose=True)
     checkpointer            = ModelCheckpoint(save_path=checkpoint_path, verbose=True)
@@ -556,12 +709,15 @@ def train(
 
     effective_batch = train_loader.batch_size * accumulation_steps
     print(f"\n{'═' * 65}")
-    print(f"  Training    | max {num_epochs} epochs  | device: {device}")
+    print(f"  Training    | max {num_epochs} epochs | scheduler: {scheduler_type} | device: {device}")
     print(f"  Real batch  : {train_loader.batch_size} | Accum steps: {accumulation_steps} "
           f"| Effective batch: {effective_batch}")
-    print(f"  Best model  → {checkpoint_path}")
-    print(f"  Resume ckpt → {resume_path}")
-    print(f"  ES patience : {es_patience} | LR patience: {lr_patience}")
+    print(f"  Best model  -> {checkpoint_path}")
+    print(f"  Resume ckpt -> {resume_path}")
+    if scheduler_type == "plateau":
+        print(f"  ES patience : {es_patience} | LR patience: {lr_patience}")
+    else:
+        print(f"  ES patience : {es_patience} | Warmup epochs: {warmup_epochs}")
     print(f"{'═' * 65}\n")
 
     for epoch in range(start_epoch, num_epochs + 1):
@@ -588,15 +744,25 @@ def train(
             f"QWK {current_qwk:.4f} | acc {metrics['accuracy']:.4f} | LR {current_lr:.2e}"
         )
 
-        scheduler.step(current_qwk)
+        # ✅ CHANGED: ReduceLROnPlateau needs the metric passed to .step();
+        # cosine/SequentialLR takes no argument and just advances on its
+        # fixed schedule. Branching here is what lets both scheduler
+        # types share this same training loop.
+        if scheduler_type == "plateau":
+            scheduler.step(current_qwk)
+        else:
+            scheduler.step()
 
         new_lr = optimizer.param_groups[0]["lr"]
         if new_lr != current_lr:
-            print(f"  [Scheduler] LR reduced: {current_lr:.2e} → {new_lr:.2e}")
+            print(f"  [LR] {current_lr:.2e} -> {new_lr:.2e}")
 
         checkpointer.step(model, current_qwk)
 
-        save_full_checkpoint(model, optimizer, scheduler, epoch, checkpointer.best_qwk, resume_path)
+        save_full_checkpoint(
+            model, optimizer, scheduler, epoch, checkpointer.best_qwk, resume_path,
+            extra=checkpoint_extra,
+        )
 
         if early_stopping.step(current_qwk):
             print(f"\nEarly stopping triggered at epoch {epoch}.")
@@ -607,7 +773,7 @@ def train(
     print(f"\n{'═' * 65}")
     print(f"  Training complete.")
     print(f"  Best QWK    : {checkpointer.best_qwk:.4f}")
-    print(f"  Best model  → {checkpoint_path}")
+    print(f"  Best model  -> {checkpoint_path}")
     print(f"{'═' * 65}")
 
     return history

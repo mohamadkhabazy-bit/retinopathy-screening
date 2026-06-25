@@ -22,19 +22,28 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 BEST_MODEL_PATH = os.path.join(CHECKPOINT_DIR, "best_model.pth")
 RESUME_PATH     = os.path.join(CHECKPOINT_DIR, "resume_p2.pth")
 
-BATCH_SIZE          = 8   # was 4 — real batches of 8 give BatchNorm and
-                           # gradients a less noisy signal than 4+accumulation
-ACCUMULATION_STEPS  = 1   # was 2 — no longer needed; effective batch stays
-                           # at 8 (same as before: 4*2), just computed in one
-                           # real pass instead of two accumulated halves
-EPOCHS              = 50
-ES_PATIENCE         = 10   # was 7 — fine-tuning signal is noisier/slower
-                           # than Phase 1; give the LR scheduler's drops
-                           # more time to take effect before stopping.
+BATCH_SIZE          = 8
+ACCUMULATION_STEPS  = 2   
+EPOCHS              = 30      # ✅ Increased to 30
+ES_PATIENCE         = 12      # ✅ Increased to 12 to prevent early quitting
 
 NUM_WORKERS_TRAIN   = 4
 NUM_WORKERS_VAL     = 2
 
+NUM_BLOCKS_TO_UNFREEZE = 1    # Only unfreezing the very last block
+
+def build_optimizer(model: torch.nn.Module) -> torch.optim.Optimizer:
+    """Discriminative LR param groups with higher peak LRs."""
+    backbone_params = [p for n, p in model.named_parameters()
+                        if p.requires_grad and n.startswith("backbone")]
+    head_params     = [p for n, p in model.named_parameters()
+                        if p.requires_grad and not n.startswith("backbone")]
+    return torch.optim.AdamW([
+        # ✅ Higher fixed peak LR for the backbone
+        {"params": backbone_params, "lr": 3e-5},
+        # ✅ Higher fixed peak LR for the head (5x backbone)
+        {"params": head_params,     "lr": 1e-4},
+    ], weight_decay=0.01)
 
 def main():
     set_seed(42)
@@ -60,7 +69,7 @@ def main():
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=2,
-        drop_last=True,   # ✅ avoids a leftover batch of size 1 hitting BatchNorm
+        drop_last=True,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=BATCH_SIZE,
@@ -68,13 +77,13 @@ def main():
         num_workers=NUM_WORKERS_VAL,
         pin_memory=True,
         persistent_workers=True,
-        drop_last=False,  # keep every validation image for accurate metrics
+        drop_last=False,
     )
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
     print(f"Effective batch size: {BATCH_SIZE * ACCUMULATION_STEPS}")
     print(f"Train workers: {NUM_WORKERS_TRAIN} | Val workers: {NUM_WORKERS_VAL}")
 
-    model = RetinopathyModel(num_classes=5, dropout=0.4).to(device)
+    model = RetinopathyModel(num_classes=5, dropout=0.5).to(device)
     class_weights = get_class_weights(train_ds["label"]).to(device)
     loss_fn = get_loss_fn(class_weights, alpha=0.7).to(device)
 
@@ -84,22 +93,17 @@ def main():
 
     if os.path.exists(RESUME_PATH):
         print("\nFound Phase 2 checkpoint — resuming.")
-        unfreeze_last_blocks(model, num_blocks=2)
 
-        # Same discriminative param groups as the fresh-start branch below —
-        # must match in structure so load_full_checkpoint's optimizer
-        # state_dict load succeeds.
-        backbone_params = [p for n, p in model.named_parameters()
-                            if p.requires_grad and n.startswith("backbone")]
-        head_params     = [p for n, p in model.named_parameters()
-                            if p.requires_grad and not n.startswith("backbone")]
+        peek_ckpt = torch.load(RESUME_PATH, map_location=device, weights_only=False)
+        num_blocks = peek_ckpt.get("num_blocks", NUM_BLOCKS_TO_UNFREEZE)
+        if "num_blocks" not in peek_ckpt:
+            print(f"  [Warning] Checkpoint has no stored num_blocks — "
+                  f"falling back to current default ({NUM_BLOCKS_TO_UNFREEZE}).")
 
-        optimizer = torch.optim.AdamW([
-            {"params": backbone_params, "lr": 5e-6},
-            {"params": head_params,     "lr": 2e-5},
-        ], weight_decay=0.0005)
+        unfreeze_last_blocks(model, num_blocks=num_blocks)
+        optimizer = build_optimizer(model)
 
-        loaded_epoch, best_qwk, sched_state = load_full_checkpoint(
+        loaded_epoch, best_qwk, sched_state, _ = load_full_checkpoint(
             model, optimizer, RESUME_PATH, device
         )
         start_epoch      = loaded_epoch + 1
@@ -109,32 +113,14 @@ def main():
         print("\nNo Phase 2 checkpoint — loading best Phase 1 weights to start fresh.")
         model = load_best_model(model, BEST_MODEL_PATH, device)
 
-        # Evaluate the loaded Phase 1 model BEFORE unfreezing/training so the
-        # checkpointer knows the real bar to beat — otherwise initial_best_qwk
-        # stays at -inf and Phase 2 could overwrite a good Phase 1 model with
-        # a worse one on epoch 1 if early fine-tuning is unstable.
         print("Evaluating loaded Phase 1 model to set the Phase 2 baseline...")
         _, p1_metrics = validate(model, val_loader, loss_fn, device, print_report=False)
         initial_best_qwk = p1_metrics["qwk"]
         print(f"  Phase 1 baseline QWK (must beat this to save): {initial_best_qwk:.4f}")
 
-        unfreeze_last_blocks(model, num_blocks=1)
-
-        # Discriminative learning rates, dropped a bit further from last
-        # attempt (1e-5/5e-5 -> 5e-6/2e-5), AND unfreezing only the last 2
-        # backbone blocks instead of 4 — that's the bigger change: fewer
-        # trainable backbone params means less capacity to overfit the
-        # 2929-image training set, which is what the train/val loss gap
-        # from the last run actually pointed to.
-        backbone_params = [p for n, p in model.named_parameters()
-                            if p.requires_grad and n.startswith("backbone")]
-        head_params     = [p for n, p in model.named_parameters()
-                            if p.requires_grad and not n.startswith("backbone")]
-
-        optimizer = torch.optim.AdamW([
-            {"params": backbone_params, "lr": 5e-6},
-            {"params": head_params,     "lr": 2e-5},
-        ], weight_decay=0.0005)
+        num_blocks = NUM_BLOCKS_TO_UNFREEZE
+        unfreeze_last_blocks(model, num_blocks=num_blocks)
+        optimizer = build_optimizer(model)
 
     model_summary(model)
 
@@ -156,11 +142,15 @@ def main():
             checkpoint_path=BEST_MODEL_PATH,
             resume_path=RESUME_PATH,
             accumulation_steps=ACCUMULATION_STEPS,
+            checkpoint_extra={"num_blocks": num_blocks},
+            
+            # ✅ Cosine scheduler with 5 epochs of warmup
+            scheduler_type="cosine",
+            warmup_epochs=5,
         )
 
     model = load_best_model(model, BEST_MODEL_PATH, device)
     final_evaluation(model, val_loader, loss_fn, device)
-
 
 if __name__ == "__main__":
     main()

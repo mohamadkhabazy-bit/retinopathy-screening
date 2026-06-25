@@ -21,11 +21,38 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 BEST_MODEL_PATH = os.path.join(CHECKPOINT_DIR, "best_model.pth")
 RESUME_PATH     = os.path.join(CHECKPOINT_DIR, "resume_p1.pth")
 
-BATCH_SIZE          = 8   # was 4 — real batches of 8, less noisy gradients
-ACCUMULATION_STEPS  = 2   # was 2 — no longer needed, effective batch stays 8
-EPOCHS              = 12  # was 8
-ES_PATIENCE         = 5   # was 3 — give the extra epochs room to be used
+BATCH_SIZE          = 8
+ACCUMULATION_STEPS  = 2
+
+# ✅ CHANGED: 12 -> 30. A frozen backbone with only CBAM+head training
+# needs more epochs to fully converge, especially now paired with a
+# cosine schedule that needs the full epoch budget to decay smoothly.
+EPOCHS              = 30
+
+# ✅ CHANGED: 5 -> 10. Gives the run more room before stopping, now that
+# it has a longer cosine schedule to follow instead of a reactive
+# plateau-based one.
+ES_PATIENCE         = 10
+
 LEARNING_RATE       = 3e-4
+
+# ✅ CHANGED: 0.0005 -> 0.01. Stronger weight decay, paired with the
+# higher dropout below, to add more regularization — appropriate given
+# this dataset is small and Phase 2 fine-tuning is no longer in the
+# pipeline to help generalization later.
+WEIGHT_DECAY        = 0.01
+
+# ✅ CHANGED: 0.4 -> 0.5. Slightly stronger dropout in the head, for the
+# same regularization reasoning as WEIGHT_DECAY above.
+DROPOUT             = 0.5
+
+# ✅ NEW: cosine annealing with linear warmup replaces ReduceLROnPlateau
+# for Phase 1 only (Phase 2's train_phase2.py is untouched and still
+# uses the default "plateau" scheduler). See model.py's train() docstring
+# for the trade-off this introduces: a fixed, non-reactive schedule in
+# exchange for smoother, more predictable decay over a longer run.
+SCHEDULER_TYPE      = "cosine"
+WARMUP_EPOCHS       = 3
 
 NUM_WORKERS_TRAIN   = 4
 NUM_WORKERS_VAL     = 2
@@ -69,16 +96,22 @@ def main():
     print(f"Effective batch size: {BATCH_SIZE * ACCUMULATION_STEPS}")
     print(f"Train workers: {NUM_WORKERS_TRAIN} | Val workers: {NUM_WORKERS_VAL}")
 
-    model = RetinopathyModel(num_classes=5, dropout=0.4).to(device)
+    model = RetinopathyModel(num_classes=5, dropout=DROPOUT).to(device)
     class_weights = get_class_weights(train_ds["label"]).to(device)
     loss_fn = get_loss_fn(class_weights, alpha=0.7).to(device)
 
+    # freeze_backbone() sets requires_grad=False on every backbone param.
+    # model.py's train_one_epoch also calls freeze_bn_stats(model) right
+    # after model.train() every epoch, which locks every backbone
+    # BatchNorm layer's running_mean/running_var to eval-mode behavior
+    # (since all of them are frozen here) — stopping the ImageNet
+    # pretrained statistics from drifting away during Phase 1.
     freeze_backbone(model)
     model_summary(model)
 
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=LEARNING_RATE, weight_decay=0.0005
+        lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
     )
 
     start_epoch      = 1
@@ -87,7 +120,7 @@ def main():
 
     if os.path.exists(RESUME_PATH):
         print(f"\nFound existing checkpoint — resuming Phase 1.")
-        loaded_epoch, best_qwk, sched_state = load_full_checkpoint(
+        loaded_epoch, best_qwk, sched_state, _ = load_full_checkpoint(
             model, optimizer, RESUME_PATH, device
         )
         start_epoch      = loaded_epoch + 1
@@ -97,7 +130,7 @@ def main():
         print("\nNo checkpoint found — starting Phase 1 fresh.")
 
     if start_epoch > EPOCHS:
-        print(f"Phase 1 already completed ({EPOCHS} epochs). Move to train_phase2.py.")
+        print(f"Phase 1 already completed ({EPOCHS} epochs).")
         return
 
     history = train(
@@ -115,9 +148,11 @@ def main():
         checkpoint_path=BEST_MODEL_PATH,
         resume_path=RESUME_PATH,
         accumulation_steps=ACCUMULATION_STEPS,
+        scheduler_type=SCHEDULER_TYPE,
+        warmup_epochs=WARMUP_EPOCHS,
     )
 
-    print("\n✅ Phase 1 complete. Run train_phase2.py next.")
+    print("\nPhase 1 complete.")
 
 
 if __name__ == "__main__":
