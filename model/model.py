@@ -158,9 +158,7 @@ class RetinopathyModel(nn.Module):
 
         in_channels = self.backbone.num_features
         self.cbam   = CBAM(in_channels)
-        # ✅ CHANGED: nn.AdaptiveAvgPool2d(1) -> GeM(). See GeM class
-        # docstring above for why. This is a drop-in replacement —
-        # same input/output shape, same call signature.
+
         self.pool   = GeM()
 
         self.head = nn.Sequential(
