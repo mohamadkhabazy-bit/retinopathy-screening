@@ -1,8 +1,5 @@
 import os
 
-# ✅ Must be set BEFORE timm/torch trigger any downloads — redirects
-# the pretrained EfficientNetB0 weights away from the default C: cache
-# and onto E: instead.
 os.environ["HF_HOME"]           = r"E:\retinopathy-screening\hf_home"
 os.environ["HF_HUB_CACHE"]      = r"E:\retinopathy-screening\hf_hub_cache"
 os.environ["TORCH_HOME"]        = r"E:\retinopathy-screening\torch_cache"
@@ -125,32 +122,7 @@ class CBAM(nn.Module):
 # ──────────────────────────────────────────────────────────────
 # GeM — Generalized Mean Pooling
 # ──────────────────────────────────────────────────────────────
-#
-# Plain average pooling (nn.AdaptiveAvgPool2d) weights every spatial
-# location equally when collapsing the feature map down to one vector.
-# In DR grading, the most diagnostically important signal (a tiny
-# microaneurysm or hemorrhage) can occupy a very small fraction of the
-# image, so averaging dilutes it among a much larger area of
-# unremarkable background tissue.
-#
-# GeM raises activations to a learnable power p before averaging, then
-# takes the same power's root afterward. As p grows past 1, this
-# increasingly emphasizes the largest activations in the feature map
-# (approaching max-pooling as p -> infinity) rather than treating every
-# location equally — letting the network learn how much to lean toward
-# "pay attention to the strongest signal" vs "average everything",
-# rather than that choice being fixed in advance.
-#
-# Verified: forward pass produces no NaN, and gradients correctly flow
-# back to the learnable p parameter during backward().
-#
-# Note: if you ever see NaN losses after adding this under mixed
-# precision (torch.amp.autocast), the most common fix is to compute
-# the GeM forward pass outside autocast, e.g.:
-#   with torch.amp.autocast("cuda", enabled=False):
-#       pooled = self.pool(features.float())
-# since x.pow(p) for a growing learnable p can be numerically less
-# stable in fp16 than in fp32.
+
 class GeM(nn.Module):
     def __init__(self, p: float = 3.0, eps: float = 1e-6):
         super().__init__()
@@ -231,40 +203,7 @@ def model_summary(model: nn.Module) -> dict:
 # ──────────────────────────────────────────────────────────────
 # BatchNorm running-stats freeze
 # ──────────────────────────────────────────────────────────────
-#
-# BUG THIS FIXES: nn.BatchNorm*d's running_mean/running_var update as a
-# side effect of any forward pass while the module is in .train() mode —
-# this is controlled entirely by .training, NOT by requires_grad. Setting
-# requires_grad=False on a BN layer's weight/bias (which freeze_backbone
-# and unfreeze_last_blocks do, since they freeze via model.backbone /
-# block .parameters()) stops the OPTIMIZER from updating those two
-# tensors, but does nothing to stop running_mean/running_var from
-# silently drifting away from the pretrained ImageNet statistics on
-# every single forward pass, every epoch, for as long as the layer
-# stays "frozen". Verified empirically: a BN layer with requires_grad
-# forced False on both weight and bias still updates running_mean/
-# running_var after a single forward pass in .train() mode.
-#
-# This matters for Phase 1 especially: the ENTIRE backbone is frozen
-# there, so every BN layer drifts for the full duration of Phase 1,
-# before Phase 2 ever touches anything. Phase 2 then inherits a backbone
-# whose normalization statistics no longer match the pretrained weights
-# they were learned alongside — no amount of Phase 2 hyperparameter
-# tuning fixes statistics that already drifted during Phase 1.
-#
-# THE FIX: after model.train() (which resets ALL submodules, including
-# frozen ones, back to train-mode BN behavior), walk the module tree and
-# force any BatchNorm layer whose parameters are ALL frozen back into
-# .eval() mode. In .eval() mode, BN normalizes using the stored running
-# stats instead of the current batch's stats — both halting further
-# drift AND making the frozen backbone's output deterministic per input
-# again (matching how a properly-frozen pretrained backbone should
-# behave), rather than fluctuating with whatever is in the current
-# mini-batch.
-#
-# This must be called every epoch, immediately after model.train(),
-# because model.train() unconditionally flips every submodule back to
-# train mode and would otherwise silently undo this fix on each call.
+
 def freeze_bn_stats(module: nn.Module) -> None:
     """
     Locks BatchNorm running_mean/running_var for any BN layer whose
@@ -571,7 +510,7 @@ def train_one_epoch(
     batch of size (batch_size * accumulation_steps) would produce.
     """
     model.train()
-    freeze_bn_stats(model)   # ✅ re-lock frozen-stage BN stats — model.train() above just reset them
+    freeze_bn_stats(model)   
     running_loss = 0.0
     optimizer.zero_grad(set_to_none=True)
 
