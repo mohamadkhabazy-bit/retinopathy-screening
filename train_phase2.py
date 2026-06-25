@@ -24,13 +24,13 @@ RESUME_PATH     = os.path.join(CHECKPOINT_DIR, "resume_p2.pth")
 
 BATCH_SIZE          = 8
 ACCUMULATION_STEPS  = 2   
-EPOCHS              = 30      # ✅ Increased to 30
-ES_PATIENCE         = 12      # ✅ Increased to 12 to prevent early quitting
+EPOCHS              = 30      
+ES_PATIENCE         = 12      
 
 NUM_WORKERS_TRAIN   = 4
 NUM_WORKERS_VAL     = 2
 
-NUM_BLOCKS_TO_UNFREEZE = 1    # Only unfreezing the very last block
+NUM_BLOCKS_TO_UNFREEZE = 1    
 
 def build_optimizer(model: torch.nn.Module) -> torch.optim.Optimizer:
     """Discriminative LR param groups with higher peak LRs."""
@@ -144,7 +144,7 @@ def main():
             accumulation_steps=ACCUMULATION_STEPS,
             checkpoint_extra={"num_blocks": num_blocks},
             
-            # ✅ Cosine scheduler with 5 epochs of warmup
+           
             scheduler_type="cosine",
             warmup_epochs=5,
         )
