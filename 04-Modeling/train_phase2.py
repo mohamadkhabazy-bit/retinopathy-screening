@@ -1,10 +1,12 @@
 import os
 import sys
 
-
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(os.path.join(ROOT_DIR, 'Data Preparation'))
-sys.path.append(os.path.join(ROOT_DIR, 'Modeling'))
+
+for folder in os.listdir(ROOT_DIR):
+    folder_path = os.path.join(ROOT_DIR, folder)
+    if os.path.isdir(folder_path):
+        sys.path.append(folder_path)
 
 os.environ["HF_HOME"]              = r"E:\retinopathy-screening\hf_home"
 os.environ["HF_DATASETS_CACHE"]    = r"E:\retinopathy-screening\hf_cache"

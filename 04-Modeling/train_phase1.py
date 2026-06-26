@@ -1,11 +1,13 @@
 import os
 import sys
 
-# ✅ CRITICAL FIX FOR CRISP-DM FOLDER STRUCTURE
-# This tells Python where to find the other folders since they have spaces in their names
+
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(os.path.join(ROOT_DIR, 'Data Preparation'))
-sys.path.append(os.path.join(ROOT_DIR, 'Modeling'))
+
+for folder in os.listdir(ROOT_DIR):
+    folder_path = os.path.join(ROOT_DIR, folder)
+    if os.path.isdir(folder_path):
+        sys.path.append(folder_path)
 
 os.environ["HF_HOME"]              = r"E:\retinopathy-screening\hf_home"
 os.environ["HF_DATASETS_CACHE"]    = r"E:\retinopathy-screening\hf_cache"
@@ -16,7 +18,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 from torch.utils.data import DataLoader
 
-# ✅ UPDATED IMPORTS (Removed 'dataset.' and 'model.' prefixes)
 from dataset import load_aptos_dataset, APTOSDataset, get_sampler, get_class_weights
 from model import (
     RetinopathyModel, set_seed, freeze_backbone, get_loss_fn,
