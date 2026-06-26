@@ -1,149 +1,246 @@
-# 🩺 APTOS Diabetic Retinopathy Screening (EfficientNet-B2 + CBAM + GeM)
+# 🩺 APTOS Diabetic Retinopathy Screening
+### EfficientNet-B2 + CBAM + GeM + Two-Phase Fine-Tuning
 
-A highly optimized, two-phase deep learning pipeline for grading Diabetic Retinopathy (DR) from fundus images. This project achieves a **Quadratic Weighted Kappa (QWK) of 0.8806** on the APTOS 2019 validation set, specifically engineered to run efficiently on consumer GPUs (6GB VRAM).
+A deep learning pipeline for automatic grading of **Diabetic Retinopathy (DR)** from retinal fundus images using the **APTOS 2019 Blindness Detection** dataset.
 
-## 🌟 Key Highlights & Final Performance
-
-* **Final Validation QWK:** `0.8806`
-* **Final Validation Accuracy:** `82.8%`
-* **Hardware Footprint:** Runs comfortably on **6GB VRAM** (e.g., RTX 4050 Laptop) using Gradient Accumulation and Mixed Precision (AMP).
-* **Architecture:** EfficientNet-B2 Backbone + CBAM Attention + GeM Pooling.
-* **Training Strategy:** Novel Two-Phase approach with strict BatchNorm statistics locking to prevent feature drift.
+The project follows the **CRISP-DM (Cross Industry Standard Process for Data Mining)** methodology and focuses on building a highly optimized yet lightweight medical image classification system capable of running on consumer-grade hardware.
 
 ---
 
-## 📥 Pre-trained Weights
+# 🚀 Final Performance
 
-The final fine-tuned model weights are included directly in this repository.
+| Metric | Score |
+|---------|-------|
+| Quadratic Weighted Kappa (QWK) | **0.8806** |
+| Accuracy | **82.8%** |
+| Macro F1-score | **66.7%** |
+| Validation Loss | **0.3865** |
 
-* **Model File:** `checkpoints/best_model.pth`
-* **Performance:** QWK 0.8806 | Accuracy 82.8%
+---
 
-**How to load the weights in your code:**
+# ✨ Features
 
-```python
-import torch
-from model.model import RetinopathyModel
+- EfficientNet-B2 backbone pretrained on ImageNet
+- CBAM Attention Module
+- GeM Pooling
+- Transfer Learning
+- Two-Phase Fine-Tuning
+- Strict BatchNorm Statistics Locking
+- Cosine Annealing Scheduler with Warmup
+- Earth Mover's Distance (EMD) Loss
+- Cross Entropy with Label Smoothing
+- Mixed Precision Training (AMP)
+- Gradient Accumulation
+- WeightedRandomSampler
+- Class Weight Smoothing (Square Root Scaling)
+- Anatomy-Aware Data Augmentation
+- Ben Graham Preprocessing
+- Green Channel Extraction
 
-# 1. Initialize the exact same architecture
-model = RetinopathyModel(num_classes=5, dropout=0.5)
+---
 
-# 2. Load the weights from the checkpoints folder
-state_dict = torch.load("checkpoints/best_model.pth", map_location="cpu")
-model.load_state_dict(state_dict)
+# 💻 Development Environment
 
-# 3. Set to evaluation mode for inference
-model.eval()
+The complete project was developed and validated on consumer-grade hardware.
+
+| Component | Specification |
+|-----------|---------------|
+| GPU | NVIDIA GeForce RTX 4050 Laptop GPU |
+| GPU Memory | 6 GB VRAM |
+| RAM | 24 GB |
+| Framework | PyTorch |
+| CUDA | Enabled |
+
+The training pipeline was specifically optimized for limited GPU memory through:
+
+- Mixed Precision (AMP)
+- Gradient Accumulation
+- Efficient memory management
+- Cosine Annealing learning rate scheduling
+
+No high-end workstation or cloud GPU was required.
+
+---
+
+# 📚 CRISP-DM Structure
+
+This repository is organized according to the CRISP-DM methodology.
+
+```
+Business Understanding/
+Data Understanding/
+Data Preparation/
+Modeling/
+Evaluation/
+Deployment/
 ```
 
----
+Each directory contains its own documentation (`README.md`) together with the corresponding implementation files.
 
-## 🏗️ Architecture & Methodology
-
-### 1. Data Preprocessing & Augmentation
-Fundus images require specialized preprocessing to preserve fine anatomical details like microaneurysms and hemorrhages.
-* **Ben Graham Preprocessing:** Applies local contrast enhancement to remove uneven illumination and highlight lesions.
-* **Green Channel Extraction:** Isolates the green channel of the RGB image, where blood vessels and lesions exhibit the highest contrast.
-* **Aspect-Ratio Preserving Resize:** Uses `LongestMaxSize` combined with `PadIfNeeded` to scale images while strictly maintaining the true circular geometry of the retina.
-* **Anatomy-Aware Augmentations:** Utilizes gentle geometric transforms (flips, 90-degree rotations, slight shifts) to ensure tiny diagnostic lesions are never warped or erased.
-
-### 2. Model Architecture
-* **Backbone:** `EfficientNet-B2` (pretrained on ImageNet). Provides an optimal balance of depth and parameter efficiency.
-* **CBAM (Convolutional Block Attention Module):** Applied after the backbone to help the network focus on "where" (spatial attention) and "what" (channel attention) the tiny lesions are.
-* **GeM (Generalized Mean) Pooling:** Replaces standard Average Pooling. GeM acts as a magnifying glass, emphasizing the highest activations (the lesions) rather than diluting them with background tissue.
-* **Classification Head:** A 512-unit fully connected layer with BatchNorm, ReLU, and Dropout (0.5).
-
-### 3. Loss Function
-* **Combined Loss:** A weighted combination of **Earth Mover's Distance (EMD)** and **Cross-Entropy (with label smoothing)**. 
-* *Why EMD?* DR grades are ordinal (Mild is closer to Moderate than to Proliferative). EMD penalizes the model based on the "distance" between the predicted and true cumulative distributions, respecting the medical severity scale.
-
-### 4. Handling Class Imbalance
-The APTOS dataset is heavily skewed towards Class 0 (No DR). To ensure robust learning across all severity levels, we employ a stabilized dual-weighting approach:
-* A `WeightedRandomSampler` guarantees balanced batch composition during training.
-* The loss function applies **square-root-scaled class weights**. This provides optimal gradient scaling for minority classes while maintaining training stability and preventing over-penalization.
+| Phase | Description |
+|--------|-------------|
+| Business Understanding | Project objectives, problem definition, success criteria |
+| Data Understanding | Dataset exploration and statistical analysis |
+| Data Preparation | Image preprocessing, augmentation and sampling |
+| Modeling | Model architecture and training pipeline |
+| Evaluation | Performance analysis and validation |
+| Deployment | Deployment strategy and inference pipeline |
 
 ---
 
-## 🧠 The Two-Phase Training Strategy
-
-To maximize the utility of the pretrained backbone while adapting to medical imagery, we utilize a strict Two-Phase training methodology:
-
-### Phase 1: Feature Extraction & Head Training
-* **Action:** The entire EfficientNet-B2 backbone is **frozen**. Only the CBAM attention module and the Classification Head are trained.
-* **Strict BatchNorm Locking:** We use a custom `freeze_bn_stats()` function. Even when the backbone is frozen, PyTorch's `.train()` mode still updates BatchNorm running means/variances. We force frozen BN layers into `.eval()` mode every epoch to lock them to their pretrained ImageNet statistics, ensuring perfectly stable feature extraction.
-* **Scheduler:** Cosine Annealing with a 3-epoch warmup.
-
-### Phase 2: Surgical Fine-Tuning
-* **Action:** We unfreeze **ONLY the very last block** of the EfficientNet-B2 backbone to allow deep semantic features to adapt to retinal pathology.
-* **Discriminative LRs:** The backbone uses a microscopic learning rate (`3e-5`), while the Head uses a higher rate (`1e-4`). 
-* **Warmup:** A 5-epoch linear warmup is applied to allow the newly unfrozen BatchNorm layers to gently stabilize their statistics before the convolution weights start making significant updates.
-
----
-
-## 📂 Project Structure
+# 📂 Repository Structure
 
 ```text
+.
+├── Business Understanding/
+│   └── README.md
+│
+├── Data Understanding/
+│   └── README.md
+│
+├── Data Preparation/
+│   ├── README.md
+│   └── dataset.py
+│
+├── Modeling/
+│   ├── README.md
+│   ├── model.py
+│   ├── train_phase1.py
+│   └── train_phase2.py
+│
+├── Evaluation/
+│   └── README.md
+│
+├── Deployment/
+│   └── README.md
+│
+├── checkpoints/
+│   └── best_model.pth
+│
 ├── dataset/
-│   ├── raw data/             # Local parquet files of the APTOS dataset
-│   └── dataset.py            # Data loading, Ben Graham, Augmentations, Samplers
-├── checkpoints/              
-│   └── best_model.pth        # 🏆 The final champion model (QWK 0.8806)
-├── model/
-│   └── model.py              # EfficientNet, CBAM, GeM, Loss, Training Loops
-├── train_phase1.py           # Phase 1 execution script (Frozen backbone)
-├── train_phase2.py           # Phase 2 execution script (Unfreeze last block)
-├── .gitignore                # Git ignore rules
+│   └── raw data/
+│
+├── .gitignore
 └── README.md
 ```
 
 ---
 
-## 🚀 Setup & Installation
+# 🧠 Model Overview
 
-### 1. Prerequisites
-* Python 3.9+
-* CUDA-enabled GPU (Tested on 6GB VRAM)
+The proposed model combines several modern deep learning techniques specifically designed for retinal image analysis.
 
-### 2. Install Dependencies
+- EfficientNet-B2 feature extractor
+- CBAM attention mechanism
+- GeM pooling layer
+- Fully connected classifier with BatchNorm and Dropout
+
+Training is performed using a carefully designed **Two-Phase Fine-Tuning Strategy** that maximizes transfer learning performance while preventing feature drift through strict BatchNorm statistics locking.
+
+Complete implementation details are available in the **Modeling** directory.
+
+---
+
+# 📊 Evaluation
+
+The final model achieves a **Quadratic Weighted Kappa (QWK) of 0.8806**, demonstrating strong agreement with expert annotations.
+
+Performance was evaluated using:
+
+- Quadratic Weighted Kappa (Primary Metric)
+- Accuracy
+- Macro Precision
+- Macro Recall
+- Macro F1-score
+- Confusion Matrix
+
+Detailed analysis and discussion are available in the **Evaluation** directory.
+
+---
+
+# 📥 Pretrained Model
+
+The final trained model is included in this repository.
+
+```
+checkpoints/
+└── best_model.pth
+```
+
+Load the model using:
+
+```python
+import torch
+from model.model import RetinopathyModel
+
+model = RetinopathyModel(num_classes=5)
+
+state_dict = torch.load(
+    "checkpoints/best_model.pth",
+    map_location="cpu"
+)
+
+model.load_state_dict(state_dict)
+model.eval()
+```
+
+---
+
+# ⚙️ Installation
+
+Clone the repository
+
+```bash
+git clone <repository-url>
+```
+
+Install dependencies
 
 ```bash
 pip install torch torchvision timm albumentations datasets scikit-learn opencv-python pillow numpy
 ```
 
-### 3. Configure Cache Directories
-This project forces HuggingFace and PyTorch caches to a specific drive to prevent C: drive overflow. **Update the environment variables at the top of the python scripts to match your local paths:**
-
-```python
-os.environ["HF_HOME"]           = r"YOUR_PATH\hf_home"
-os.environ["HF_DATASETS_CACHE"] = r"YOUR_PATH\hf_cache"
-os.environ["TORCH_HOME"]        = r"YOUR_PATH\torch_cache"
-```
-
 ---
 
-## 🏃 How to Train from Scratch
+# 🏃 Training
 
-### Step 1: Run Phase 1
-Phase 1 trains the attention mechanism and the classification head while keeping the feature extractor stable.
+Phase 1
 
 ```bash
 python train_phase1.py
 ```
 
-*Wait for Phase 1 to complete. It will save the best weights to `checkpoints/best_model.pth`.*
-
-### Step 2: Run Phase 2
-Phase 2 surgically fine-tunes the deepest layers of the backbone.
+Phase 2
 
 ```bash
 python train_phase2.py
 ```
 
-*Note: Phase 2 will automatically load the Phase 1 weights, evaluate them to set a baseline, and will ONLY overwrite `best_model.pth` if Phase 2 achieves a higher QWK.*
+The best-performing model is automatically saved as:
+
+```
+checkpoints/best_model.pth
+```
 
 ---
 
-## 📜 License
+# 📄 Dataset
 
-This project is created for educational and research purposes.
-*Note: The APTOS dataset is provided by EyePacs under the CC BY-NC 4.0 license.*
+This project uses the **APTOS 2019 Blindness Detection** dataset.
+
+Due to licensing restrictions, the dataset is **not included** in this repository.
+
+After downloading the dataset, place it inside:
+
+```
+dataset/
+└── raw data/
+```
+
+---
+
+# 📜 License
+
+This repository is intended for educational and research purposes.
+
+The APTOS 2019 dataset is distributed separately under its original license.
