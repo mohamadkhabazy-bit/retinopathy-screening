@@ -1,4 +1,11 @@
 import os
+import sys
+
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(ROOT_DIR, 'Data Preparation'))
+sys.path.append(os.path.join(ROOT_DIR, 'Modeling'))
+
 os.environ["HF_HOME"]              = r"E:\retinopathy-screening\hf_home"
 os.environ["HF_DATASETS_CACHE"]    = r"E:\retinopathy-screening\hf_cache"
 os.environ["HF_HUB_CACHE"]         = r"E:\retinopathy-screening\hf_hub_cache"
@@ -8,8 +15,8 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 from torch.utils.data import DataLoader
 
-from dataset.dataset import load_aptos_dataset, APTOSDataset, get_sampler, get_class_weights
-from model.model import (
+from dataset import load_aptos_dataset, APTOSDataset, get_sampler, get_class_weights
+from model import (
     RetinopathyModel, set_seed, unfreeze_last_blocks, set_finetune_lr,
     get_loss_fn, train, load_full_checkpoint, load_best_model,
     final_evaluation, model_summary, validate
@@ -144,7 +151,6 @@ def main():
             accumulation_steps=ACCUMULATION_STEPS,
             checkpoint_extra={"num_blocks": num_blocks},
             
-           
             scheduler_type="cosine",
             warmup_epochs=5,
         )
