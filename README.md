@@ -92,7 +92,7 @@ Each directory contains its own documentation (`README.md`) together with the co
 
 ```text
 .
-├── Business Understanding/
+── Business Understanding/
 │   └── README.md
 │
 ├── Data Understanding/
@@ -100,7 +100,16 @@ Each directory contains its own documentation (`README.md`) together with the co
 │
 ├── Data Preparation/
 │   ├── README.md
-│   └── dataset.py
+│   ├── dataset.py
+│   ├── visualize_data.ipynb          
+│   └── visualizations/              
+│       ├── class_distribution.png
+│       ├── sample_images.png
+│       ├── image_quality_analysis.png
+│       ├── image_dimensions.png
+│       ├── clahe_effect.png
+│       ├── pipeline_majority.png
+│       └── pipeline_minority.png
 │
 ├── Modeling/
 │   ├── README.md
