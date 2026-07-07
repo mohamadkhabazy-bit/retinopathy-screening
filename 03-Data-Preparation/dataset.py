@@ -4,10 +4,9 @@ os.environ["HF_HOME"]            = r"E:\retinopathy-screening\hf_home"
 os.environ["HF_DATASETS_CACHE"]  = r"E:\retinopathy-screening\hf_cache"
 os.environ["HF_HUB_CACHE"]       = r"E:\retinopathy-screening\hf_hub_cache"
 
-import io
 import cv2
 import numpy as np
-from PIL import Image
+
 
 import torch
 from torch.utils.data import Dataset, WeightedRandomSampler
