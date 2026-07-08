@@ -113,5 +113,3 @@ RESUME_P2_PATH = os.path.join(
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 
-print(f"Environment : {'Colab' if IS_COLAB else 'Windows' if IS_WINDOWS else 'Other'}")
-print(f"Project root: {PROJECT_ROOT}")

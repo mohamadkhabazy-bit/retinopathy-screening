@@ -6,10 +6,15 @@ import sys
 # ──────────────────────────────────────────────────────────────
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 for folder in os.listdir(ROOT_DIR):
     folder_path = os.path.join(ROOT_DIR, folder)
     if os.path.isdir(folder_path):
         sys.path.append(folder_path)
+
+
 
 # ──────────────────────────────────────────────────────────────
 # 1 & 2. Imports from config and Environment Variables
