@@ -12,7 +12,6 @@ if ROOT_DIR not in sys.path:
 import cv2
 import numpy as np
 
-
 import torch
 from torch.utils.data import Dataset, WeightedRandomSampler
 
@@ -21,6 +20,9 @@ from albumentations.pytorch import ToTensorV2
 
 from datasets import load_dataset
 from sklearn.utils.class_weight import compute_class_weight
+
+from sklearn.model_selection import train_test_split
+from datasets import DatasetDict
 
 from config import (
     RAW_DATA_DIR,
@@ -52,50 +54,84 @@ def load_aptos_dataset(
     raw_data_dir: str = RAW_DATA_DIR,
     cache_dir: str = CACHE_DIR
 ):
-    """
-    Loads the 13 local parquet files AND forces the converted Arrow
-    cache to also live on E: — without explicitly passing cache_dir
-    here, load_dataset falls back to the C: default even though the
-    HF_DATASETS_CACHE env var is set above, since some datasets
-    versions only respect the env var for the Hub cache, not for
-    builder-level caching. Passing it explicitly closes that gap.
-    """
+
     print(f"Loading APTOS dataset from local files: {raw_data_dir}")
     print(f"Arrow cache will be written to: {cache_dir}")
 
     if raw_data_dir is not None:
-
         print(f"Loading local parquet dataset from: {raw_data_dir}")
-
         ds = load_dataset(
             "parquet",
             data_dir=raw_data_dir,
             cache_dir=cache_dir
         )["train"]
-
     else:
-
         print(f"Loading HuggingFace dataset: {HF_DATASET_NAME}")
-
-        ds = load_dataset(
+        dataset_dict = load_dataset(
             HF_DATASET_NAME,
             cache_dir=cache_dir
-        )["train"]
+        )
+        print(dataset_dict)
+        ds = dataset_dict["train"]
 
-    ds = ds.train_test_split(
+    # ==============================
+    # Fix String Labels (Crucial for Colab / HF Hub)
+    # ==============================
+    # HF Hub datasets sometimes return string labels instead of integers.
+    # We map them to standard APTOS integers (0-4) to prevent sklearn errors.
+    if len(ds) > 0 and isinstance(ds[0]["label"], str):
+        print("Detected string labels. Mapping to integers (0-4)...")
+        label_map = {
+            "no_diabetic_retinopathy": 0,
+            "mild_retinopathy": 1,
+            "moderate_retinopathy": 2,
+            "severe_retinopathy": 3,
+            "proliferative_retinopathy": 4
+        }
+        
+        def encode_labels(examples):
+            examples["label"] = [label_map[l] for l in examples["label"]]
+            return examples
+            
+        ds = ds.map(encode_labels, batched=True)
+
+    # ==============================
+    # Stratified Split
+    # ==============================
+    indices = np.arange(len(ds))
+    labels = np.array(ds["label"])
+
+    train_idx, val_idx = train_test_split(
+        indices,
         test_size=0.2,
-        stratify_by_column="label",
-        seed=42
+        stratify=labels,
+        random_state=42
     )
 
-    print(f"Train: {len(ds['train'])} | Val: {len(ds['test'])}")
+    dataset = DatasetDict({
+        "train": ds.select(train_idx),
+        "test": ds.select(val_idx)
+    })
+
+    print(
+        f"Total: {len(ds)} | "
+        f"Train: {len(dataset['train'])} | "
+        f"Val: {len(dataset['test'])}"
+    )
+
     print("\nTrain class distribution:")
-    train_labels = ds["train"]["label"]
-    unique, counts = np.unique(train_labels, return_counts=True)
+    train_labels = dataset["train"]["label"]
+    unique, counts = np.unique(
+        train_labels,
+        return_counts=True
+    )
     for cls, count in zip(unique, counts):
         print(f"  Class {cls}: {count}")
 
-    return ds["train"], ds["test"]
+    return (
+        dataset["train"],
+        dataset["test"]
+    )
 
 
 # ──────────────────────────────────────────────────────────────
@@ -118,7 +154,6 @@ def extract_green_channel(img: np.ndarray) -> np.ndarray:
 # ──────────────────────────────────────────────────────────────
 # Augmentations
 # ──────────────────────────────────────────────────────────────
-
 def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
     assert split in ("val", "test", "majority", "minority"), \
         f"Invalid split: {split}"
@@ -146,7 +181,6 @@ def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
         ])
 
     if split == "minority":
-
         return A.Compose([
             A.LongestMaxSize(max_size=image_size),
             A.PadIfNeeded(min_height=image_size, min_width=image_size,

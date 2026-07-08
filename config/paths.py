@@ -47,8 +47,7 @@ else:
 
 
 # HuggingFace dataset name (used when RAW_DATA_DIR is None)
-HF_DATASET_NAME = "sngsfydy/aptos_train"
-
+HF_DATASET_NAME = "bumbledeep/aptos"
 # ==============================
 # HuggingFace / Torch Cache
 # ==============================

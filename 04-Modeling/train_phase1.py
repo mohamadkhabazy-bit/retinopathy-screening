@@ -49,12 +49,12 @@ from model import (
 # ──────────────────────────────────────────────────────────────
 # 5. Hyperparameters
 # ──────────────────────────────────────────────────────────────
-BATCH_SIZE          = 8
+BATCH_SIZE          = 16
 ACCUMULATION_STEPS  = 2
 
-EPOCHS              = 30
+EPOCHS              = 15
 
-ES_PATIENCE         = 10
+ES_PATIENCE         = 5
 
 LEARNING_RATE       = 3e-4
 
@@ -65,8 +65,8 @@ DROPOUT             = 0.5
 SCHEDULER_TYPE      = "cosine"
 WARMUP_EPOCHS       = 3
 
-NUM_WORKERS_TRAIN   = 4
-NUM_WORKERS_VAL     = 2
+NUM_WORKERS_TRAIN   = 2
+NUM_WORKERS_VAL     = 1
 
 
 def main():
@@ -91,8 +91,8 @@ def main():
         sampler=sampler,
         num_workers=NUM_WORKERS_TRAIN,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
+        
+        
         drop_last=True,   # avoids a leftover batch of size 1 hitting BatchNorm
     )
     val_loader = DataLoader(

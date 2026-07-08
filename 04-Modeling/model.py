@@ -150,7 +150,7 @@ class RetinopathyModel(nn.Module):
         super().__init__()
 
         self.backbone = timm.create_model(
-            "efficientnet_b2",
+            "efficientnet_b4",
             pretrained=pretrained,
             num_classes=0,
             global_pool=""
