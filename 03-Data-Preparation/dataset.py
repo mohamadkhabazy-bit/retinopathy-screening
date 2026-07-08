@@ -1,8 +1,13 @@
 # %%
 import os
-os.environ["HF_HOME"]            = r"E:\retinopathy-screening\hf_home"
-os.environ["HF_DATASETS_CACHE"]  = r"E:\retinopathy-screening\hf_cache"
-os.environ["HF_HUB_CACHE"]       = r"E:\retinopathy-screening\hf_hub_cache"
+import sys
+
+ROOT_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")
+)
+
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
 
 import cv2
 import numpy as np
@@ -17,21 +22,31 @@ from albumentations.pytorch import ToTensorV2
 from datasets import load_dataset
 from sklearn.utils.class_weight import compute_class_weight
 
+from config import (
+    RAW_DATA_DIR,
+    CACHE_DIR,
+    HF_HOME,
+    HF_DATASETS_CACHE,
+    HF_HUB_CACHE,
+    HF_DATASET_NAME
+)
+
+os.environ["HF_HOME"] = HF_HOME
+os.environ["HF_DATASETS_CACHE"] = HF_DATASETS_CACHE
+os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
+
 
 # ──────────────────────────────────────────────────────────────
-# Constants — everything on E:
+# Constants 
 # ──────────────────────────────────────────────────────────────
 IMAGE_SIZE       = 512
 MINORITY_CLASSES = {1, 3, 4}
 MEAN             = [0.485, 0.456, 0.406]
 STD              = [0.229, 0.224, 0.225]
 
-RAW_DATA_DIR = r"E:\retinopathy-screening\dataset\raw data"
-CACHE_DIR    = r"E:\retinopathy-screening\hf_cache"
-
 
 # ──────────────────────────────────────────────────────────────
-# Load — reads local parquet files, writes Arrow cache to E: too
+# Load 
 # ──────────────────────────────────────────────────────────────
 def load_aptos_dataset(
     raw_data_dir: str = RAW_DATA_DIR,
@@ -48,11 +63,24 @@ def load_aptos_dataset(
     print(f"Loading APTOS dataset from local files: {raw_data_dir}")
     print(f"Arrow cache will be written to: {cache_dir}")
 
-    ds = load_dataset(
-        "parquet",
-        data_dir=raw_data_dir,
-        cache_dir=cache_dir
-    )["train"]
+    if raw_data_dir is not None:
+
+        print(f"Loading local parquet dataset from: {raw_data_dir}")
+
+        ds = load_dataset(
+            "parquet",
+            data_dir=raw_data_dir,
+            cache_dir=cache_dir
+        )["train"]
+
+    else:
+
+        print(f"Loading HuggingFace dataset: {HF_DATASET_NAME}")
+
+        ds = load_dataset(
+            HF_DATASET_NAME,
+            cache_dir=cache_dir
+        )["train"]
 
     ds = ds.train_test_split(
         test_size=0.2,
@@ -127,12 +155,13 @@ def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
             A.RandomBrightnessContrast(p=0.4),
-            A.ShiftScaleRotate(
-                shift_limit=0.05,
-                scale_limit=0.05,
-                rotate_limit=15,
+            A.Affine(
+                scale=(0.95, 1.05),
+                translate_percent=(0.05, 0.05),
+                rotate=(-15, 15),
                 p=0.5
             ),
+            A.Affine(shear=(-10, 10), p=0.3),
             A.CLAHE(clip_limit=2.0, p=0.3),
             A.Normalize(mean=MEAN, std=STD),
             ToTensorV2()
