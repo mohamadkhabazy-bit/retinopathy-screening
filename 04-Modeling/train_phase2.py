@@ -1,6 +1,9 @@
 import os
 import sys
 
+# ──────────────────────────────────────────────────────────────
+# ROOT_DIR and sys.path (Kept as instructed)
+# ──────────────────────────────────────────────────────────────
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 for folder in os.listdir(ROOT_DIR):
@@ -8,10 +11,24 @@ for folder in os.listdir(ROOT_DIR):
     if os.path.isdir(folder_path):
         sys.path.append(folder_path)
 
-os.environ["HF_HOME"]              = r"E:\retinopathy-screening\hf_home"
-os.environ["HF_DATASETS_CACHE"]    = r"E:\retinopathy-screening\hf_cache"
-os.environ["HF_HUB_CACHE"]         = r"E:\retinopathy-screening\hf_hub_cache"
-os.environ["TORCH_HOME"]           = r"E:\retinopathy-screening\torch_cache"
+# ──────────────────────────────────────────────────────────────
+# Imports from config and Environment Variables
+# ──────────────────────────────────────────────────────────────
+from config import (
+    HF_HOME,
+    HF_DATASETS_CACHE,
+    HF_HUB_CACHE,
+    TORCH_HOME,
+    CHECKPOINT_DIR,
+    BEST_MODEL_PATH,
+    RESUME_P1_PATH,
+    RESUME_P2_PATH,
+)
+
+os.environ["HF_HOME"] = HF_HOME
+os.environ["HF_DATASETS_CACHE"] = HF_DATASETS_CACHE
+os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
+os.environ["TORCH_HOME"] = TORCH_HOME
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import torch
@@ -24,13 +41,11 @@ from model import (
     final_evaluation, model_summary, validate
 )
 
-ROOT            = r"E:\retinopathy-screening"
-CHECKPOINT_DIR  = os.path.join(ROOT, "checkpoints")
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+# os.makedirs(CHECKPOINT_DIR, exist_ok=True) is removed (handled in config.py)
 
-BEST_MODEL_PATH = os.path.join(CHECKPOINT_DIR, "best_model.pth")
-RESUME_PATH     = os.path.join(CHECKPOINT_DIR, "resume_p2.pth")
-
+# ──────────────────────────────────────────────────────────────
+# Hyperparameters
+# ──────────────────────────────────────────────────────────────
 BATCH_SIZE          = 8
 ACCUMULATION_STEPS  = 2   
 EPOCHS              = 30      
@@ -100,10 +115,11 @@ def main():
     initial_best_qwk = -float("inf")
     scheduler_state   = None
 
-    if os.path.exists(RESUME_PATH):
+    # Replaced RESUME_PATH with RESUME_P2_PATH
+    if os.path.exists(RESUME_P2_PATH):
         print("\nFound Phase 2 checkpoint — resuming.")
 
-        peek_ckpt = torch.load(RESUME_PATH, map_location=device, weights_only=False)
+        peek_ckpt = torch.load(RESUME_P2_PATH, map_location=device, weights_only=False)
         num_blocks = peek_ckpt.get("num_blocks", NUM_BLOCKS_TO_UNFREEZE)
         if "num_blocks" not in peek_ckpt:
             print(f"  [Warning] Checkpoint has no stored num_blocks — "
@@ -113,7 +129,7 @@ def main():
         optimizer = build_optimizer(model)
 
         loaded_epoch, best_qwk, sched_state, _ = load_full_checkpoint(
-            model, optimizer, RESUME_PATH, device
+            model, optimizer, RESUME_P2_PATH, device
         )
         start_epoch      = loaded_epoch + 1
         initial_best_qwk = best_qwk
@@ -136,7 +152,8 @@ def main():
     if start_epoch > EPOCHS:
         print(f"Phase 2 already completed. Skipping to final evaluation.")
     else:
-        train(
+        # Kept 'history' for consistency and potential future use
+        history = train(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -149,7 +166,7 @@ def main():
             initial_best_qwk=initial_best_qwk,
             scheduler_state=scheduler_state,
             checkpoint_path=BEST_MODEL_PATH,
-            resume_path=RESUME_PATH,
+            resume_path=RESUME_P2_PATH,
             accumulation_steps=ACCUMULATION_STEPS,
             checkpoint_extra={"num_blocks": num_blocks},
             
