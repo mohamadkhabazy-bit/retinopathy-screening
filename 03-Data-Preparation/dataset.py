@@ -42,7 +42,6 @@ os.environ["HF_HUB_CACHE"] = HF_HUB_CACHE
 # Constants 
 # ──────────────────────────────────────────────────────────────
 IMAGE_SIZE       = 512
-MINORITY_CLASSES = {1, 3, 4}
 MEAN             = [0.485, 0.456, 0.406]
 STD              = [0.229, 0.224, 0.225]
 
@@ -77,8 +76,6 @@ def load_aptos_dataset(
     # ==============================
     # Fix String Labels (Crucial for Colab / HF Hub)
     # ==============================
-    # HF Hub datasets sometimes return string labels instead of integers.
-    # We map them to standard APTOS integers (0-4) to prevent sklearn errors.
     if len(ds) > 0 and isinstance(ds[0]["label"], str):
         print("Detected string labels. Mapping to integers (0-4)...")
         label_map = {
@@ -108,15 +105,16 @@ def load_aptos_dataset(
         random_state=42
     )
 
+    # ✅ اصلاح نام‌گذاری: تغییر "test" به "val" برای هماهنگی با کل پروژه
     dataset = DatasetDict({
         "train": ds.select(train_idx),
-        "test": ds.select(val_idx)
+        "val": ds.select(val_idx)
     })
 
     print(
         f"Total: {len(ds)} | "
         f"Train: {len(dataset['train'])} | "
-        f"Val: {len(dataset['test'])}"
+        f"Val: {len(dataset['val'])}"
     )
 
     print("\nTrain class distribution:")
@@ -128,10 +126,37 @@ def load_aptos_dataset(
     for cls, count in zip(unique, counts):
         print(f"  Class {cls}: {count}")
 
+    # ✅ ریترن کردن با کلید صحیح "val"
     return (
         dataset["train"],
-        dataset["test"]
+        dataset["val"]
     )
+
+
+# ──────────────────────────────────────────────────────────────
+# Crop Black Borders
+# ──────────────────────────────────────────────────────────────
+def crop_image_from_gray(img: np.ndarray, tol: int = 7) -> np.ndarray:
+    """
+    برش خودکار حاشیه‌های سیاه تصویر شبکیه با حفظ کامل ساختار دایره.
+    tol: آستانه سیاه بودن پیکسل‌ها (بین 0 تا 255)
+    """
+    if img.ndim == 2:
+        mask = img > tol
+        return img[np.ix_(mask.any(axis=1), mask.any(axis=0))]
+    
+    elif img.ndim == 3:
+        gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        mask = gray_img > tol
+        
+        check_shape = img[np.ix_(mask.any(axis=1), mask.any(axis=0))].shape[0]
+        if check_shape == 0:
+            return img
+        else:
+            img1 = img[np.ix_(mask.any(axis=1), mask.any(axis=0))]
+            return img1
+    
+    return img
 
 
 # ──────────────────────────────────────────────────────────────
@@ -143,7 +168,7 @@ def ben_graham_preprocess(img: np.ndarray, sigma: int = 10) -> np.ndarray:
     return processed
 
 
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # Green Channel Extraction
 # ──────────────────────────────────────────────────────────────
 def extract_green_channel(img: np.ndarray) -> np.ndarray:
@@ -152,10 +177,10 @@ def extract_green_channel(img: np.ndarray) -> np.ndarray:
 
 
 # ──────────────────────────────────────────────────────────────
-# Augmentations
-# ──────────────────────────────────────────────────────────────
+# Augmentations (Safe for Medical Images)
+# ─────────────────────────────────────────────────────────────
 def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
-    assert split in ("val", "test", "majority", "minority"), \
+    assert split in ("train", "val", "test"), \
         f"Invalid split: {split}"
 
     if split in ("val", "test"):
@@ -167,36 +192,23 @@ def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
             ToTensorV2()
         ])
 
-    if split == "majority":
+    # ✅ پایپ‌لاین واحد و امن برای آموزش (بدون Shortcut Learning)
+    if split == "train":
         return A.Compose([
+            # 1. حفظ Aspect Ratio (حیاتی برای داده پزشکی)
             A.LongestMaxSize(max_size=image_size),
             A.PadIfNeeded(min_height=image_size, min_width=image_size,
                           border_mode=cv2.BORDER_CONSTANT, fill=0),
+            
+            # 2. تغییرات هندسی امن (شبکیه جهت خاصی ندارد)
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
-            A.RandomBrightnessContrast(p=0.3),
-            A.Normalize(mean=MEAN, std=STD),
-            ToTensorV2()
-        ])
-
-    if split == "minority":
-        return A.Compose([
-            A.LongestMaxSize(max_size=image_size),
-            A.PadIfNeeded(min_height=image_size, min_width=image_size,
-                          border_mode=cv2.BORDER_CONSTANT, fill=0),
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
-            A.RandomBrightnessContrast(p=0.4),
-            A.Affine(
-                scale=(0.95, 1.05),
-                translate_percent=(0.05, 0.05),
-                rotate=(-15, 15),
-                p=0.5
-            ),
-            A.Affine(shear=(-10, 10), p=0.3),
-            A.CLAHE(clip_limit=2.0, p=0.3),
+            
+            # 3. تغییرات نوری و کنتراست (برای شبیه‌سازی دوربین‌های مختلف)
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+            A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.5),
+            
             A.Normalize(mean=MEAN, std=STD),
             ToTensorV2()
         ])
@@ -223,9 +235,9 @@ class APTOSDataset(Dataset):
         self.use_ben_graham    = use_ben_graham
         self.use_green_channel = use_green_channel
 
-        self.majority_tf = get_transforms("majority", image_size)
-        self.minority_tf = get_transforms("minority", image_size)
-        self.val_tf      = get_transforms("val", image_size)
+        # ✅ فقط یک ترنسفورم برای آموزش (جلوگیری از نشت اطلاعات)
+        self.train_tf = get_transforms("train", image_size)
+        self.val_tf   = get_transforms("val", image_size)
 
     def __len__(self):
         return len(self.ds)
@@ -234,21 +246,28 @@ class APTOSDataset(Dataset):
         sample = self.ds[idx]
         label  = int(sample["label"])
 
+        # 1. لود تصویر به‌صورت RGB
         img = sample["image"].convert("RGB")
         img = np.array(img)
 
+        # 2. حذف حاشیه‌های سیاه
+        img = crop_image_from_gray(img)
+
+        # 3. اعمال فیلتر بن گراهام
         if self.use_ben_graham:
             img = ben_graham_preprocess(img)
 
+        # 4. کانال سبز
         if self.use_green_channel:
             img = extract_green_channel(img)
 
+        # 5. انتخاب ترنسفورم (بدون توجه به لیبل - کور نسبت به کلاس)
         if self.split == "train":
-            tf = self.minority_tf if label in MINORITY_CLASSES \
-                 else self.majority_tf
+            tf = self.train_tf
         else:
             tf = self.val_tf
 
+        # 6. اعمال نهایی و تبدیل به تنسور
         augmented = tf(image=img)
         return (
             augmented["image"],
@@ -265,7 +284,7 @@ def get_class_weights(labels) -> torch.Tensor:
         classes=np.array([0, 1, 2, 3, 4]),
         y=labels
     )
-    weights = np.sqrt(weights)
+    # ✅ حذف np.sqrt برای بالانس شدن کامل و ۱۰٪ فیزیکی بچ‌ها توسط سامپلر
     print("Class weights:")
     for i, w in enumerate(weights):
         print(f"  Class {i}: {w:.3f}")
