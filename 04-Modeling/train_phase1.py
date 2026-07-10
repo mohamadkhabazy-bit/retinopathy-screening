@@ -14,8 +14,6 @@ for folder in os.listdir(ROOT_DIR):
     if os.path.isdir(folder_path):
         sys.path.append(folder_path)
 
-
-
 # ──────────────────────────────────────────────────────────────
 # 1 & 2. Imports from config and Environment Variables
 # ──────────────────────────────────────────────────────────────
@@ -38,13 +36,12 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import load_aptos_dataset, APTOSDataset, get_sampler, get_class_weights
+# ✅ حذف get_class_weights از ایمپورت‌ها چون دیگر در این فایل استفاده نمی‌شود
+from dataset import load_aptos_dataset, APTOSDataset, get_sampler
 from model import (
     RetinopathyModel, set_seed, freeze_backbone, get_loss_fn,
     train, load_full_checkpoint, model_summary
 )
-
-# 3. os.makedirs(CHECKPOINT_DIR, exist_ok=True) is removed (handled in config.py)
 
 # ──────────────────────────────────────────────────────────────
 # 5. Hyperparameters
@@ -62,8 +59,9 @@ WEIGHT_DECAY        = 0.01
 
 DROPOUT             = 0.5
 
-SCHEDULER_TYPE      = "cosine"
-WARMUP_EPOCHS       = 3
+# ✅ تغییر سدلر به plateau و حذف وارم‌آپ برای فاز یک
+SCHEDULER_TYPE      = "plateau"
+WARMUP_EPOCHS       = 0
 
 NUM_WORKERS_TRAIN   = 2
 NUM_WORKERS_VAL     = 1
@@ -91,8 +89,6 @@ def main():
         sampler=sampler,
         num_workers=NUM_WORKERS_TRAIN,
         pin_memory=True,
-        
-        
         drop_last=True,   # avoids a leftover batch of size 1 hitting BatchNorm
     )
     val_loader = DataLoader(
@@ -108,8 +104,9 @@ def main():
     print(f"Train workers: {NUM_WORKERS_TRAIN} | Val workers: {NUM_WORKERS_VAL}")
 
     model = RetinopathyModel(num_classes=5, dropout=DROPOUT).to(device)
-    class_weights = get_class_weights(train_ds["label"]).to(device)
-    loss_fn = get_loss_fn(class_weights, alpha=0.7).to(device)
+    
+    # ✅ وزن‌ها رو به تابع لاس نمیدیم چون سامپلر داره توی دیتالوادر کار بالانس رو انجام میده
+    loss_fn = get_loss_fn(class_weights=None, alpha=0.5).to(device)
 
     freeze_backbone(model)
     model_summary(model)
@@ -123,7 +120,6 @@ def main():
     initial_best_qwk = -float("inf")
     scheduler_state   = None
 
-    # Replaced RESUME_PATH with RESUME_P1_PATH directly
     if os.path.exists(RESUME_P1_PATH):
         print(f"\nFound existing checkpoint — resuming Phase 1.")
         loaded_epoch, best_qwk, sched_state, _ = load_full_checkpoint(
@@ -139,7 +135,6 @@ def main():
         print(f"Phase 1 already completed ({EPOCHS} epochs).")
         return
 
-    # 6. Kept 'history' for potential future plotting and logging
     history = train(
         model=model,
         train_loader=train_loader,
