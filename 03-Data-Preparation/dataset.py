@@ -194,25 +194,46 @@ def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
 
     # ✅ پایپ‌لاین واحد و امن برای آموزش (بدون Shortcut Learning)
     if split == "train":
-        return A.Compose([
-            # 1. حفظ Aspect Ratio (حیاتی برای داده پزشکی)
-            A.LongestMaxSize(max_size=image_size),
-            A.PadIfNeeded(min_height=image_size, min_width=image_size,
-                          border_mode=cv2.BORDER_CONSTANT, fill=0),
-            
-            # 2. تغییرات هندسی امن (شبکیه جهت خاصی ندارد)
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
-            
-            # 3. تغییرات نوری و کنتراست (برای شبیه‌سازی دوربین‌های مختلف)
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-            A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.5),
-            
-            A.Normalize(mean=MEAN, std=STD),
-            ToTensorV2()
-        ])
-
+      return A.Compose([
+          # ۱. حفظ Aspect Ratio (حیاتی برای داده پزشکی)
+          A.LongestMaxSize(max_size=image_size),
+          A.PadIfNeeded(min_height=image_size, min_width=image_size,
+                        border_mode=cv2.BORDER_CONSTANT, fill=0),
+          
+          # ۲. تغییرات هندسی پایه (شبکیه جهت جغرافیایی ندارد)
+          A.HorizontalFlip(p=0.5),
+          A.VerticalFlip(p=0.5),
+          A.RandomRotate90(p=0.5),
+          
+          # 🌟 ۳. جابه‌جایی، زوم و چرخش‌های بسیار ریز (شبیه‌سازی خطای سنتر کردن دوربین)
+          # مقادیر ۵٪ برای shift و scale کاملاً امن است و ساختار را خراب نمی‌کند
+          A.ShiftScaleRotate(
+              shift_limit=0.05, 
+              scale_limit=0.05, 
+              rotate_limit=15, 
+              border_mode=cv2.BORDER_CONSTANT, 
+              fill=0, 
+              p=0.5
+          ),
+          
+          # ۴. تغییرات نوری و کنتراست (شبیه‌سازی شدت نور فلاش دوربین‌ها)
+          A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+          A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.5),
+          
+          # 🌟 ۵. شبیه‌سازی کاتاراکت (ماتی)، لرزش دست یا وضوح دیجیتال دوربین
+          A.OneOf([
+              A.GaussianBlur(blur_limit=(3, 5), p=0.4),
+              A.MotionBlur(blur_limit=3, p=0.3),
+              A.Sharpen(alpha=(0.2, 0.4), p=0.3),
+          ], p=0.3),
+          
+          # 🌟 ۶. شبیه‌سازی نویز سنسور دوربین‌های قدیمی
+          A.GaussNoise(var_limit=(10.0, 40.0), p=0.2),
+          
+          # ۷. استانداردسازی و تبدیل به تنسور
+          A.Normalize(mean=MEAN, std=STD),
+          ToTensorV2()
+      ])
 
 # ──────────────────────────────────────────────────────────────
 # Dataset

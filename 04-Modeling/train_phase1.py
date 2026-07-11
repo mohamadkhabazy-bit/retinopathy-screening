@@ -51,13 +51,13 @@ ACCUMULATION_STEPS  = 2
 
 EPOCHS              = 15
 
-ES_PATIENCE         = 5
+ES_PATIENCE         = 7
 
 LEARNING_RATE       = 3e-4
 
 WEIGHT_DECAY        = 0.01
 
-DROPOUT             = 0.5
+DROPOUT             = 0.4
 
 # ✅ تغییر سدلر به plateau و حذف وارم‌آپ برای فاز یک
 SCHEDULER_TYPE      = "plateau"

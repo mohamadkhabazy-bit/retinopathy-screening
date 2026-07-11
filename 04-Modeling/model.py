@@ -163,11 +163,11 @@ class RetinopathyModel(nn.Module):
 
         self.head = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(in_channels, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(in_channels, 1024),
+            nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout),
-            nn.Linear(512, num_classes)
+            nn.Linear(1024, num_classes)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
