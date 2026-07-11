@@ -48,6 +48,8 @@ else:
 
 # HuggingFace dataset name (used when RAW_DATA_DIR is None)
 HF_DATASET_NAME = "bumbledeep/aptos"
+
+
 # ==============================
 # HuggingFace / Torch Cache
 # ==============================
@@ -89,9 +91,16 @@ CHECKPOINT_DIR = os.path.join(
     "checkpoints"
 )
 
+# بهترین مدل فاز ۱ (همان فایلی که QWK 0.8608 را با آن گرفتی)
 BEST_MODEL_PATH = os.path.join(
     CHECKPOINT_DIR,
     "best_model.pth"
+)
+
+# 🌟 مسیر جدید برای فاز ۲: جلوگیری از رونویسی و پاک شدن وزن‌های طلایی فاز ۱
+BEST_MODEL_P2_PATH = os.path.join(
+    CHECKPOINT_DIR,
+    "best_model_p2.pth"
 )
 
 RESUME_P1_PATH = os.path.join(
@@ -110,5 +119,3 @@ RESUME_P2_PATH = os.path.join(
 # ==============================
 
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-
-

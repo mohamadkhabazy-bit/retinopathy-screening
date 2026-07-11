@@ -6,6 +6,9 @@ import sys
 # ──────────────────────────────────────────────────────────────
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 for folder in os.listdir(ROOT_DIR):
     folder_path = os.path.join(ROOT_DIR, folder)
     if os.path.isdir(folder_path):
@@ -21,6 +24,7 @@ from config import (
     TORCH_HOME,
     CHECKPOINT_DIR,
     BEST_MODEL_PATH,
+    BEST_MODEL_P2_PATH,  #  اضافه کردن این متغیر
     RESUME_P1_PATH,
     RESUME_P2_PATH,
 )
@@ -34,25 +38,24 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import load_aptos_dataset, APTOSDataset, get_sampler, get_class_weights
+# ✅ حذف get_class_weights از ایمپورت‌ها
+from dataset import load_aptos_dataset, APTOSDataset, get_sampler
 from model import (
     RetinopathyModel, set_seed, unfreeze_last_blocks, set_finetune_lr,
     get_loss_fn, train, load_full_checkpoint, load_best_model,
     final_evaluation, model_summary, validate
 )
 
-# os.makedirs(CHECKPOINT_DIR, exist_ok=True) is removed (handled in config.py)
-
 # ──────────────────────────────────────────────────────────────
 # Hyperparameters
 # ──────────────────────────────────────────────────────────────
-BATCH_SIZE          = 8
+BATCH_SIZE          = 16
 ACCUMULATION_STEPS  = 2   
 EPOCHS              = 30      
 ES_PATIENCE         = 12      
 
-NUM_WORKERS_TRAIN   = 4
-NUM_WORKERS_VAL     = 2
+NUM_WORKERS_TRAIN   = 2
+NUM_WORKERS_VAL     = 1
 
 NUM_BLOCKS_TO_UNFREEZE = 1    
 
@@ -108,8 +111,9 @@ def main():
     print(f"Train workers: {NUM_WORKERS_TRAIN} | Val workers: {NUM_WORKERS_VAL}")
 
     model = RetinopathyModel(num_classes=5, dropout=0.5).to(device)
-    class_weights = get_class_weights(train_ds["label"]).to(device)
-    loss_fn = get_loss_fn(class_weights, alpha=0.7).to(device)
+    
+    # ✅ وزن‌ها رو به تابع لاس نمیدیم چون سامپلر داره توی دیتالوادر کار بالانس رو انجام میده
+    loss_fn = get_loss_fn(class_weights=None, alpha=0.5).to(device)
 
     start_epoch      = 1
     initial_best_qwk = -float("inf")
@@ -165,7 +169,7 @@ def main():
             start_epoch=start_epoch,
             initial_best_qwk=initial_best_qwk,
             scheduler_state=scheduler_state,
-            checkpoint_path=BEST_MODEL_PATH,
+            checkpoint_path=BEST_MODEL_P2_PATH,  # 🌟 تغییر به مسیر فاز ۲
             resume_path=RESUME_P2_PATH,
             accumulation_steps=ACCUMULATION_STEPS,
             checkpoint_extra={"num_blocks": num_blocks},
@@ -174,7 +178,8 @@ def main():
             warmup_epochs=5,
         )
 
-    model = load_best_model(model, BEST_MODEL_PATH, device)
+    # ارزیابی نهایی روی بهترین مدلِ به دست آمده از فاز ۲
+    model = load_best_model(model, BEST_MODEL_P2_PATH, device)  #  تغییر به مسیر فاز ۲
     final_evaluation(model, val_loader, loss_fn, device)
 
 if __name__ == "__main__":
