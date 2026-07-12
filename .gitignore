@@ -12,6 +12,8 @@ checkpoints/*
 
 # EXCEPT for the final best model (whitelist it)
 !checkpoints/best_model.pth
+!checkpoints/best_model_p2.pth
+
 
 # Ignore other large binary formats just in case
 *.pt
