@@ -57,7 +57,7 @@ ES_PATIENCE         = 12
 NUM_WORKERS_TRAIN   = 2
 NUM_WORKERS_VAL     = 1
 
-NUM_BLOCKS_TO_UNFREEZE = 1    
+NUM_BLOCKS_TO_UNFREEZE = 2    
 
 def build_optimizer(model: torch.nn.Module) -> torch.optim.Optimizer:
     """Discriminative LR param groups with higher peak LRs."""
@@ -110,7 +110,7 @@ def main():
     print(f"Effective batch size: {BATCH_SIZE * ACCUMULATION_STEPS}")
     print(f"Train workers: {NUM_WORKERS_TRAIN} | Val workers: {NUM_WORKERS_VAL}")
 
-    model = RetinopathyModel(num_classes=5, dropout=0.5).to(device)
+    model = RetinopathyModel(num_classes=5, dropout=0.35).to(device)
     
     # ✅ وزن‌ها رو به تابع لاس نمیدیم چون سامپلر داره توی دیتالوادر کار بالانس رو انجام میده
     loss_fn = get_loss_fn(class_weights=None, alpha=0.5).to(device)
@@ -174,7 +174,7 @@ def main():
             accumulation_steps=ACCUMULATION_STEPS,
             checkpoint_extra={"num_blocks": num_blocks},
             
-            scheduler_type="cosine",
+            scheduler_type="plateau",
             warmup_epochs=5,
         )
 
