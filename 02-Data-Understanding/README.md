@@ -58,7 +58,7 @@ The dataset is highly imbalanced, with the majority of samples belonging to the 
 This imbalance required specialized sampling and weighting strategies during model training.
 
 <p align="center">
-  <img src="../Data%20Preparation/visualizations/class_distribution.png" width="70%">
+  <img src="../03-Data-Preparation/visualizations/class_distribution.png" width="75%">
 </p>
 
 ---
@@ -68,7 +68,7 @@ This imbalance required specialized sampling and weighting strategies during mod
 Representative retinal fundus images from different disease grades illustrate the substantial visual differences in lesion severity and retinal appearance.
 
 <p align="center">
-  <img src="../Data%20Preparation/visualizations/sample_images.png" width="90%">
+  <img src="../03-Data-Preparation/visualizations/sample_images.png" width="90%">
 </p>
 
 ---
@@ -79,18 +79,18 @@ Understanding the image properties is essential for designing an effective prepr
 
 ### Image Quality Analysis
 
-The dataset contains noticeable variations in illumination, sharpness, and overall image quality due to differences in acquisition devices and imaging conditions.
+The dataset exhibits noticeable variations in illumination, contrast, sharpness, and image quality due to differences in acquisition devices and imaging conditions.
 
 <p align="center">
-  <img src="../Data%20Preparation/visualizations/image_quality_analysis.png" width="80%">
+  <img src="../03-Data-Preparation/visualizations/image_quality_analysis.png" width="80%">
 </p>
 
 ### Image Dimensions
 
-Although the original images have varying resolutions, they maintain a similar aspect ratio. Therefore, all images were resized to a fixed input size during preprocessing to ensure consistent model training.
+The original fundus images have varying resolutions while maintaining a similar aspect ratio. Consequently, all images were resized to a fixed input size before training to ensure consistent model input.
 
 <p align="center">
-  <img src="../Data%20Preparation/visualizations/image_dimensions.png" width="80%">
+  <img src="../03-Data-Preparation/visualizations/image_dimensions.png" width="80%">
 </p>
 
 ---
@@ -99,9 +99,10 @@ Although the original images have varying resolutions, they maintain a similar a
 
 The exploratory analysis revealed several important observations:
 
-- Retinal lesions are extremely small compared to the entire image.
-- Preserving anatomical structures is critical.
-- Standard computer vision augmentations may distort medically important features.
-- The ordinal relationship between disease grades must be considered during training and evaluation.
+- Retinal lesions occupy only a very small portion of the entire fundus image.
+- Preserving anatomical structures is crucial for accurate diagnosis.
+- Standard computer vision augmentations can distort clinically relevant features if applied indiscriminately.
+- The strong class imbalance requires specialized sampling and loss-weighting strategies.
+- The ordinal relationship between disease grades should be considered during both training and evaluation.
 
-These findings directly guided the design of the preprocessing pipeline, augmentation strategy, model architecture, loss function, and evaluation methodology.
+These findings directly guided the design of the preprocessing pipeline, data augmentation strategy, model architecture, loss function, and evaluation methodology.
