@@ -12,7 +12,7 @@ The objective is to improve image quality, preserve retinal anatomy, increase da
 
 Each retinal image is first processed using the **Ben Graham preprocessing** technique.
 
-This method applies Gaussian blurring followed by weighted image subtraction to reduce illumination variations while enhancing important retinal structures such as blood vessels, microaneurysms, and hemorrhages.
+This method applies Gaussian blurring followed by weighted image subtraction to suppress uneven illumination while enhancing retinal structures such as blood vessels, microaneurysms, hemorrhages, and exudates. This step reduces acquisition-related variability caused by different fundus cameras and imaging conditions.
 
 ---
 
@@ -20,7 +20,7 @@ This method applies Gaussian blurring followed by weighted image subtraction to 
 
 After preprocessing, the **green channel** is extracted and replicated into a three-channel image.
 
-Among the RGB channels, the green channel provides the highest contrast for retinal vessels and diabetic retinopathy lesions, allowing the network to learn discriminative features more effectively.
+Among the RGB channels, the green channel provides the highest contrast for retinal vessels and diabetic retinopathy lesions, allowing the network to learn clinically relevant features more effectively while discarding less informative color information.
 
 ---
 
@@ -33,29 +33,49 @@ Instead of directly resizing images to a fixed resolution, the preprocessing pip
 
 This strategy preserves the original aspect ratio of the retina while padding the image to **512 × 512** pixels.
 
-Maintaining anatomical geometry prevents distortion of retinal vessels and pathological regions.
+Maintaining anatomical geometry prevents distortion of retinal vessels, the optic disc, the macula, and pathological regions, ensuring that clinically meaningful structures remain geometrically consistent.
 
 ---
 
 ## Data Augmentation
 
-Different augmentation policies are applied during training to improve model generalization.
+Different augmentation policies are applied during training to improve model generalization while preserving medically meaningful retinal structures.
 
-### Standard Augmentations
+### Standard Augmentations (Majority Classes)
+
+The majority class (**No DR** and **Moderate**) uses a conservative augmentation pipeline consisting of:
 
 - Horizontal Flip
 - Vertical Flip
 - Random 90° Rotation
-- Random Brightness and Contrast
+- Random Brightness & Contrast
 
-### Minority-Class Augmentations
+<p align="center">
+  <img src="visualizations/pipeline_majority.png" width="85%">
+</p>
 
-For minority classes (Mild, Severe, and Proliferative), additional augmentation is applied:
+### Enhanced Augmentations (Minority Classes)
+
+To compensate for the limited number of samples in the **Mild**, **Severe**, and **Proliferative DR** classes, additional augmentations are applied:
 
 - ShiftScaleRotate
 - CLAHE (Contrast Limited Adaptive Histogram Equalization)
 
-These augmentations improve feature diversity while preserving medically meaningful structures.
+These transformations increase sample diversity while preserving retinal anatomy and improving the visibility of subtle lesions.
+
+<p align="center">
+  <img src="visualizations/pipeline_minority.png" width="85%">
+</p>
+
+---
+
+## CLAHE Enhancement
+
+CLAHE is selectively applied to minority classes to improve local contrast without over-amplifying image noise. This enhances small retinal lesions such as microaneurysms and hemorrhages, making them more distinguishable for the neural network.
+
+<p align="center">
+  <img src="visualizations/clahe_effect.png" width="80%">
+</p>
 
 ---
 
@@ -89,7 +109,7 @@ Class weights are computed using Scikit-learn's `compute_class_weight()` functio
 
 Instead of using the original weights directly, their square root is applied before training.
 
-This soft-weighting strategy reduces the risk of **Double Penalty**, where minority classes would otherwise receive excessive emphasis through both sampling and loss weighting.
+This soft-weighting strategy reduces the risk of **double penalty**, where minority classes would otherwise receive excessive emphasis through both sampling and loss weighting.
 
 ---
 
@@ -97,4 +117,4 @@ This soft-weighting strategy reduces the risk of **Double Penalty**, where minor
 
 Finally, all images are normalized using the standard **ImageNet** mean and standard deviation.
 
-This normalization ensures compatibility with the pretrained EfficientNet backbone and contributes to faster convergence and more stable optimization.
+This normalization ensures compatibility with the pretrained EfficientNet backbone, leading to faster convergence, more stable optimization, and improved transfer learning performance.
