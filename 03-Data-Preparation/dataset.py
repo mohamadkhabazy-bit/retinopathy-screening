@@ -159,22 +159,24 @@ def crop_image_from_gray(img: np.ndarray, tol: int = 7) -> np.ndarray:
     return img
 
 
-# ──────────────────────────────────────────────────────────────
-# Ben Graham Preprocessing
-# ──────────────────────────────────────────────────────────────
-def ben_graham_preprocess(img: np.ndarray, sigma: int = 10) -> np.ndarray:
-    blurred   = cv2.GaussianBlur(img, (0, 0), sigma)
-    processed = cv2.addWeighted(img, 4, blurred, -4, 128)
-    return processed
 
-
-# ─────────────────────────────────────────────────────────────
-# Green Channel Extraction
 # ──────────────────────────────────────────────────────────────
-def extract_green_channel(img: np.ndarray) -> np.ndarray:
-    green = img[:, :, 1]
-    return np.stack([green, green, green], axis=2)
-
+# CLAHE on LAB Color Space Preprocessing
+# ──────────────────────────────────────────────────────────────
+def clahe_lab_preprocess(img: np.ndarray, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)) -> np.ndarray:
+    """
+    اعمال الگوریتم CLAHE روی کانال روشنایی (L) در فضای رنگی LAB.
+    """
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    cl = clahe.apply(l_channel)
+    
+    merged = cv2.merge((cl, a_channel, b_channel))
+    img_rgb = cv2.cvtColor(merged, cv2.COLOR_LAB2RGB)
+    
+    return img_rgb
 
 # ──────────────────────────────────────────────────────────────
 # Augmentations (Safe for Medical Images)
@@ -192,49 +194,42 @@ def get_transforms(split: str, image_size: int = IMAGE_SIZE) -> A.Compose:
             ToTensorV2()
         ])
 
-    # ✅ پایپ‌لاین واحد و امن برای آموزش (بدون Shortcut Learning)
+    # پایپ‌لاین واحد و امن برای آموزش
     if split == "train":
-      return A.Compose([
-          # ۱. حفظ Aspect Ratio (حیاتی برای داده پزشکی)
-          A.LongestMaxSize(max_size=image_size),
-          A.PadIfNeeded(min_height=image_size, min_width=image_size,
-                        border_mode=cv2.BORDER_CONSTANT, fill=0),
-          
-          # ۲. تغییرات هندسی پایه (شبکیه جهت جغرافیایی ندارد)
-          A.HorizontalFlip(p=0.5),
-          A.VerticalFlip(p=0.5),
-          A.RandomRotate90(p=0.5),
-          
-          # 🌟 ۳. جابه‌جایی، زوم و چرخش‌های بسیار ریز (شبیه‌سازی خطای سنتر کردن دوربین)
-          # مقادیر ۵٪ برای shift و scale کاملاً امن است و ساختار را خراب نمی‌کند
-          A.ShiftScaleRotate(
-              shift_limit=0.05, 
-              scale_limit=0.05, 
-              rotate_limit=15, 
-              border_mode=cv2.BORDER_CONSTANT, 
-              fill=0, 
-              p=0.5
-          ),
-          
-          # ۴. تغییرات نوری و کنتراست (شبیه‌سازی شدت نور فلاش دوربین‌ها)
-          A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-          A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.5),
-          
-          # 🌟 ۵. شبیه‌سازی کاتاراکت (ماتی)، لرزش دست یا وضوح دیجیتال دوربین
-          A.OneOf([
-              A.GaussianBlur(blur_limit=(3, 5), p=0.4),
-              A.MotionBlur(blur_limit=3, p=0.3),
-              A.Sharpen(alpha=(0.2, 0.4), p=0.3),
-          ], p=0.3),
-          
-          # 🌟 ۶. شبیه‌سازی نویز سنسور دوربین‌های قدیمی
-          A.GaussNoise(var_limit=(10.0, 40.0), p=0.2),
-          
-          # ۷. استانداردسازی و تبدیل به تنسور
-          A.Normalize(mean=MEAN, std=STD),
-          ToTensorV2()
-      ])
-
+        return A.Compose([
+            A.LongestMaxSize(max_size=image_size),
+            A.PadIfNeeded(min_height=image_size, min_width=image_size,
+                          border_mode=cv2.BORDER_CONSTANT, fill=0),
+            
+            # ۱. تغییرات هندسی (بدون از دست رفتن اطلاعات پیکسل)
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+            
+            A.ShiftScaleRotate(
+                shift_limit=0.05, 
+                scale_limit=0.05, 
+                rotate_limit=15, 
+                border_mode=cv2.BORDER_CONSTANT, 
+                fill=0, 
+                p=0.5
+            ),
+            
+            # ۲. تغییرات نوری کنترل‌شده (بسیار ملایم‌تر از قبل برای حفظ اثر CLAHE)
+            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3),
+            
+            # ۳. بلر بسیار محدود (فقط برای ایجاد پایداری در تصاویر خارج از فوکوس)
+            A.OneOf([
+                A.GaussianBlur(blur_limit=(3, 5), p=0.5),
+                A.MotionBlur(blur_limit=3, p=0.5),
+            ], p=0.1),  # احتمال کل را به 10% کاهش دادیم
+            
+            # ۴. نویز بسیار ضعیف
+            A.GaussNoise(var_limit=(10.0, 20.0), p=0.1),  # واریانس و احتمال کم شد
+            
+            A.Normalize(mean=MEAN, std=STD),
+            ToTensorV2()
+        ])
 # ──────────────────────────────────────────────────────────────
 # Dataset
 # ──────────────────────────────────────────────────────────────
@@ -245,18 +240,15 @@ class APTOSDataset(Dataset):
         hf_dataset,
         split,
         image_size=IMAGE_SIZE,
-        use_ben_graham=True,
-        use_green_channel=True
+        use_clahe_lab=True
     ):
         assert split in ("train", "val", "test"), \
             f"Invalid split: '{split}'"
 
-        self.ds                = hf_dataset
-        self.split             = split
-        self.use_ben_graham    = use_ben_graham
-        self.use_green_channel = use_green_channel
+        self.ds            = hf_dataset
+        self.split         = split
+        self.use_clahe_lab = use_clahe_lab
 
-        # ✅ فقط یک ترنسفورم برای آموزش (جلوگیری از نشت اطلاعات)
         self.train_tf = get_transforms("train", image_size)
         self.val_tf   = get_transforms("val", image_size)
 
@@ -267,34 +259,29 @@ class APTOSDataset(Dataset):
         sample = self.ds[idx]
         label  = int(sample["label"])
 
-        # 1. لود تصویر به‌صورت RGB
+        # ۱. لود تصویر
         img = sample["image"].convert("RGB")
         img = np.array(img)
 
-        # 2. حذف حاشیه‌های سیاه
+        # ۲. حذف حاشیه‌های سیاه
         img = crop_image_from_gray(img)
 
-        # 3. اعمال فیلتر بن گراهام
-        if self.use_ben_graham:
-            img = ben_graham_preprocess(img)
+        # ۳. اعمال پیش‌پردازش LAB
+        if self.use_clahe_lab:
+            img = clahe_lab_preprocess(img)
 
-        # 4. کانال سبز
-        if self.use_green_channel:
-            img = extract_green_channel(img)
-
-        # 5. انتخاب ترنسفورم (بدون توجه به لیبل - کور نسبت به کلاس)
+        # ۴. انتخاب ترنسفورم
         if self.split == "train":
             tf = self.train_tf
         else:
             tf = self.val_tf
 
-        # 6. اعمال نهایی و تبدیل به تنسور
+        # ۵. اعمال نهایی و تبدیل به تنسور
         augmented = tf(image=img)
         return (
             augmented["image"],
             torch.tensor(label, dtype=torch.long)
         )
-
 
 # ──────────────────────────────────────────────────────────────
 # Class Weights + Sampler

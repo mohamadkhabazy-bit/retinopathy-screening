@@ -46,18 +46,18 @@ from model import (
 # ──────────────────────────────────────────────────────────────
 # 5. Hyperparameters
 # ──────────────────────────────────────────────────────────────
-BATCH_SIZE          = 16
+BATCH_SIZE          = 32
 ACCUMULATION_STEPS  = 2
 
 EPOCHS              = 15
 
 ES_PATIENCE         = 7
 
-LEARNING_RATE       = 3e-4
+LEARNING_RATE       = 1e-3
 
-WEIGHT_DECAY        = 0.01
+WEIGHT_DECAY        = 0.0001
 
-DROPOUT             = 0.4
+DROPOUT             = 0.3
 
 # ✅ تغییر سدلر به plateau و حذف وارم‌آپ برای فاز یک
 SCHEDULER_TYPE      = "plateau"

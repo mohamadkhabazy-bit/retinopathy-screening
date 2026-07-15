@@ -2,7 +2,7 @@ import os
 import sys
 
 # ──────────────────────────────────────────────────────────────
-# ROOT_DIR and sys.path (Kept as instructed)
+# ROOT_DIR and sys.path
 # ──────────────────────────────────────────────────────────────
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -15,7 +15,7 @@ for folder in os.listdir(ROOT_DIR):
         sys.path.append(folder_path)
 
 # ──────────────────────────────────────────────────────────────
-# Imports from config and Environment Variables
+# Imports
 # ──────────────────────────────────────────────────────────────
 from config import (
     HF_HOME,
@@ -24,7 +24,7 @@ from config import (
     TORCH_HOME,
     CHECKPOINT_DIR,
     BEST_MODEL_PATH,
-    BEST_MODEL_P2_PATH,  #  اضافه کردن این متغیر
+    BEST_MODEL_P2_PATH,
     RESUME_P1_PATH,
     RESUME_P2_PATH,
 )
@@ -38,39 +38,39 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 from torch.utils.data import DataLoader
 
-# ✅ حذف get_class_weights از ایمپورت‌ها
 from dataset import load_aptos_dataset, APTOSDataset, get_sampler
 from model import (
-    RetinopathyModel, set_seed, unfreeze_last_blocks, set_finetune_lr,
+    RetinopathyModel, set_seed, unfreeze_last_blocks,
     get_loss_fn, train, load_full_checkpoint, load_best_model,
     final_evaluation, model_summary, validate
 )
 
 # ──────────────────────────────────────────────────────────────
-# Hyperparameters
+# Hyperparameters - Phase 2 (Optimized)
 # ──────────────────────────────────────────────────────────────
-BATCH_SIZE          = 16
+BATCH_SIZE          = 32
 ACCUMULATION_STEPS  = 2   
 EPOCHS              = 30      
-ES_PATIENCE         = 12      
+ES_PATIENCE         = 15      
 
 NUM_WORKERS_TRAIN   = 2
 NUM_WORKERS_VAL     = 1
 
+# 🌟 فقط ۱ بلاک آخر بک‌بون آن‌فریز می‌شود تا از اورفیت جلوگیری شود
 NUM_BLOCKS_TO_UNFREEZE = 2    
 
 def build_optimizer(model: torch.nn.Module) -> torch.optim.Optimizer:
-    """Discriminative LR param groups with higher peak LRs."""
+    """نرخ یادگیری تمایزی بسیار ایمن برای جلوگیری از فراموشی فاجعه‌بار"""
     backbone_params = [p for n, p in model.named_parameters()
                         if p.requires_grad and n.startswith("backbone")]
     head_params     = [p for n, p in model.named_parameters()
                         if p.requires_grad and not n.startswith("backbone")]
     return torch.optim.AdamW([
-        # ✅ Higher fixed peak LR for the backbone
-        {"params": backbone_params, "lr": 3e-5},
-        # ✅ Higher fixed peak LR for the head (5x backbone)
-        {"params": head_params,     "lr": 1e-4},
-    ], weight_decay=0.01)
+        # ✅ نرخ یادگیری فوق‌العاده پایین برای لایه استخوان‌بندی آزاد شده
+        {"params": backbone_params, "lr": 1.5e-5},  
+        # ✅ نرخ یادگیری منطقی برای لایه‌های هِد و CBAM
+        {"params": head_params,     "lr": 8e-5},
+    ], weight_decay=0.0001)
 
 def main():
     set_seed(42)
@@ -110,16 +110,15 @@ def main():
     print(f"Effective batch size: {BATCH_SIZE * ACCUMULATION_STEPS}")
     print(f"Train workers: {NUM_WORKERS_TRAIN} | Val workers: {NUM_WORKERS_VAL}")
 
-    model = RetinopathyModel(num_classes=5, dropout=0.35).to(device)
+    model = RetinopathyModel(num_classes=5, dropout=0.4).to(device)
     
-    # ✅ وزن‌ها رو به تابع لاس نمیدیم چون سامپلر داره توی دیتالوادر کار بالانس رو انجام میده
-    loss_fn = get_loss_fn(class_weights=None, alpha=0.5).to(device)
+    # تنظیم وزن‌های لاس فانکشن بدون اثر روی توزیع نمونه‌بردار
+    loss_fn = get_loss_fn(class_weights=None, alpha=0.6).to(device)
 
     start_epoch      = 1
     initial_best_qwk = -float("inf")
     scheduler_state   = None
 
-    # Replaced RESUME_PATH with RESUME_P2_PATH
     if os.path.exists(RESUME_P2_PATH):
         print("\nFound Phase 2 checkpoint — resuming.")
 
@@ -129,7 +128,8 @@ def main():
             print(f"  [Warning] Checkpoint has no stored num_blocks — "
                   f"falling back to current default ({NUM_BLOCKS_TO_UNFREEZE}).")
 
-        unfreeze_last_blocks(model, num_blocks=num_blocks)
+        # 🌟 فراخوانی تابع جدید با تنظیم فلگ روی False
+        unfreeze_last_blocks(model, num_blocks=num_blocks, unfreeze_conv_head=False)
         optimizer = build_optimizer(model)
 
         loaded_epoch, best_qwk, sched_state, _ = load_full_checkpoint(
@@ -148,7 +148,9 @@ def main():
         print(f"  Phase 1 baseline QWK (must beat this to save): {initial_best_qwk:.4f}")
 
         num_blocks = NUM_BLOCKS_TO_UNFREEZE
-        unfreeze_last_blocks(model, num_blocks=num_blocks)
+        
+        # 🌟 فراخوانی تابع جدید با تنظیم فلگ روی False
+        unfreeze_last_blocks(model, num_blocks=num_blocks, unfreeze_conv_head=False)
         optimizer = build_optimizer(model)
 
     model_summary(model)
@@ -156,7 +158,6 @@ def main():
     if start_epoch > EPOCHS:
         print(f"Phase 2 already completed. Skipping to final evaluation.")
     else:
-        # Kept 'history' for consistency and potential future use
         history = train(
             model=model,
             train_loader=train_loader,
@@ -169,17 +170,16 @@ def main():
             start_epoch=start_epoch,
             initial_best_qwk=initial_best_qwk,
             scheduler_state=scheduler_state,
-            checkpoint_path=BEST_MODEL_P2_PATH,  # 🌟 تغییر به مسیر فاز ۲
+            checkpoint_path=BEST_MODEL_P2_PATH,
             resume_path=RESUME_P2_PATH,
             accumulation_steps=ACCUMULATION_STEPS,
             checkpoint_extra={"num_blocks": num_blocks},
-            
-            scheduler_type="plateau",
+            scheduler_type="cosine",
             warmup_epochs=5,
         )
 
-    # ارزیابی نهایی روی بهترین مدلِ به دست آمده از فاز ۲
-    model = load_best_model(model, BEST_MODEL_P2_PATH, device)  #  تغییر به مسیر فاز ۲
+    # لود کردن بهترین مدل به دست آمده در فاز ۲ برای ارزیابی نهایی
+    model = load_best_model(model, BEST_MODEL_P2_PATH, device)
     final_evaluation(model, val_loader, loss_fn, device)
 
 if __name__ == "__main__":

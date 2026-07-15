@@ -204,28 +204,13 @@ def model_summary(model: nn.Module) -> dict:
 
 def freeze_bn_stats(module: nn.Module) -> None:
     """
-    Locks BatchNorm running_mean/running_var for any BN layer whose
-    parameters are currently frozen (requires_grad=False), regardless
-    of the parent model's .train()/.eval() state.
-
-    Must be called every epoch, right after model.train() — because
-    model.train() resets ALL submodules (including frozen ones) back
-    to training-mode BN behavior, undoing this fix if not reapplied.
-
-    Correctly handles every phase:
-      - Phase 1 (freeze_backbone): entire backbone frozen → all backbone
-        BN layers get locked to eval mode.
-      - Phase 2 (unfreeze_last_blocks): only the still-frozen early
-        stages get locked; the stages you deliberately unfroze keep
-        adapting their BN stats normally, alongside their now-trainable
-        conv weights, which is exactly what you want there.
-      - Phase 3 / unfreeze_all: every parameter is trainable, so this
-        is a no-op — no BN layer gets locked, all of them keep adapting.
+    تمام لایه‌های BatchNorm بک‌بون را در حالت eval قفل می‌کند تا میانگین و واریانس 
+    آن‌ها تحت هیچ شرایطی تغییر نکند و فراموشی فاجعه‌بار رخ ندهد.
     """
-    for m in module.modules():
+    for name, m in module.named_modules():
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-            if all(not p.requires_grad for p in m.parameters()):
-                m.eval()
+            if "backbone" in name:
+                m.eval()  # قفل کردن آمار لایه‌های بچ‌نورم بک‌بون روی فاز ۱
 
 
 # ──────────────────────────────────────────────────────────────
@@ -243,36 +228,47 @@ def freeze_backbone(model: RetinopathyModel) -> None:
     count_trainable_parameters(model)
 
 
-def unfreeze_last_blocks(model: RetinopathyModel, num_blocks: int = 4) -> None:
+def unfreeze_last_blocks(model: RetinopathyModel, num_blocks: int = 1, 
+                         unfreeze_conv_head: bool = False) -> None:
     """
-    EfficientNetB0 has 7 stages (indices 0-6). Stages 0-2 stay frozen
-    (low-level edge/texture features), last 4 stages unfreeze.
+    فقط بلاک‌های آخر بک‌بون را آن‌فریز می‌کند.
+    unfreeze_conv_head: اگر True باشد، conv_head و bn2 هم آن‌فریز می‌شوند (پیش‌فرض: False).
     """
+    # فریز کردن کل بک‌بون در ابتدا
     for param in model.backbone.parameters():
         param.requires_grad = False
 
+    # گرفتن لیست بلاک‌ها/استیج‌های بک‌بون
     blocks = list(model.backbone.blocks)
     if num_blocks > len(blocks):
         print(f"  [Warning] num_blocks={num_blocks} exceeds total stages "
               f"({len(blocks)}). Unfreezing all {len(blocks)} stages instead.")
         num_blocks = len(blocks)
 
+    # آن‌فریز کردن بلاک‌های درخواستی انتهای بک‌بون
     for block in blocks[-num_blocks:]:
         for param in block.parameters():
             param.requires_grad = True
 
-    for param in model.backbone.conv_head.parameters():
-        param.requires_grad = True
-    for param in model.backbone.bn2.parameters():
-        param.requires_grad = True
+    # فقط در صورت تایید، لایه‌های سنگین انتهایی بک‌بون آن‌فریز می‌شوند
+    if unfreeze_conv_head:
+        for param in model.backbone.conv_head.parameters():
+            param.requires_grad = True
+        for param in model.backbone.bn2.parameters():
+            param.requires_grad = True
 
+    # لایه‌های اختصاصی شما همیشه باز می‌مانند
     for param in model.cbam.parameters():
         param.requires_grad = True
     for param in model.head.parameters():
         param.requires_grad = True
 
-    print(f"\n[Phase 2] Last {num_blocks}/{len(blocks)} backbone stages unfrozen.")
-    count_trainable_parameters(model)
+    print(f"\n[Phase 2] Last {num_blocks}/{len(blocks)} backbone stages unfrozen "
+          f"(conv_head: {'unfrozen' if unfreeze_conv_head else 'frozen'}).")
+    
+    # چاپ وضعیت پارامترها (اگر این تابع در فایل شما وجود دارد)
+    if 'count_trainable_parameters' in globals():
+        count_trainable_parameters(model)
 
 
 def unfreeze_all(model: RetinopathyModel) -> None:
@@ -584,7 +580,7 @@ def train(
     resume_path: str = "checkpoints/resume.pth",
     es_patience: int = 7,
     lr_factor: float = 0.5,
-    lr_patience: int = 3,
+    lr_patience: int = 5,
     start_epoch: int = 1,
     initial_best_qwk: float = -np.inf,
     max_grad_norm: float = 1.0,
