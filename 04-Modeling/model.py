@@ -204,13 +204,16 @@ def model_summary(model: nn.Module) -> dict:
 
 def freeze_bn_stats(module: nn.Module) -> None:
     """
-    تمام لایه‌های BatchNorm بک‌بون را در حالت eval قفل می‌کند تا میانگین و واریانس 
-    آن‌ها تحت هیچ شرایطی تغییر نکند و فراموشی فاجعه‌بار رخ ندهد.
+    قانون جدید: BN فقط وقتی قفل می‌ماند که پارامترهای خودش فریز باشند.
+    - فاز ۱ (بک‌بون کاملاً فریز): دقیقاً رفتار قبلی — همه BN ها eval.
+    - فاز ۲ (۲ بلاک آخر باز): BN همان ۲ بلاک هم آموزش می‌بیند تا فاین‌تیون
+      واقعاً انجام شود؛ BN بقیه لایه‌ها همچنان قفل است.
     """
     for name, m in module.named_modules():
-        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-            if "backbone" in name:
-                m.eval()  # قفل کردن آمار لایه‌های بچ‌نورم بک‌بون روی فاز ۱
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)) and "backbone" in name:
+            bn_params = list(m.parameters(recurse=False))
+            if bn_params and all(not p.requires_grad for p in bn_params):
+                m.eval() # قفل کردن آمار لایه‌های بچ‌نورم بک‌بون روی فاز ۱
 
 
 # ──────────────────────────────────────────────────────────────
@@ -315,14 +318,15 @@ class EMDLoss(nn.Module):
 class CombinedLoss(nn.Module):
     def __init__(
         self,
-        class_weights: torch.Tensor = None,
-        alpha:         float        = 0.7,
-        num_classes:   int          = 5
+        class_weights:   torch.Tensor = None,
+        alpha:           float        = 0.7,
+        num_classes:     int          = 5,
+        label_smoothing: float        = 0.05,   
     ):
         super().__init__()
         self.alpha = alpha
         self.emd   = EMDLoss(num_classes=num_classes, class_weights=class_weights)
-        self.ce    = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
+        self.ce    = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return (
@@ -331,8 +335,13 @@ class CombinedLoss(nn.Module):
         )
 
 
-def get_loss_fn(class_weights: torch.Tensor, alpha: float = 0.7) -> CombinedLoss:
-    return CombinedLoss(class_weights=class_weights, alpha=alpha, num_classes=5)
+def get_loss_fn(class_weights: torch.Tensor, alpha: float = 0.7,
+                label_smoothing: float = 0.05) -> CombinedLoss:
+    return CombinedLoss(
+        class_weights=class_weights, alpha=alpha,
+        num_classes=5, label_smoothing=label_smoothing
+    )
+
 
 
 # ──────────────────────────────────────────────────────────────
@@ -365,6 +374,109 @@ def compute_metrics(
     return metrics
 
 
+
+
+# ──────────────────────────────────────────────────────────────
+# Ordinal Decision Rule — expected grade + optimized thresholds
+# ──────────────────────────────────────────────────────────────
+
+def probs_to_scores(probs: np.ndarray) -> np.ndarray:
+    """ŷ = Σ k·p(k) — continuous grade score in [0, 4]."""
+    return probs @ np.arange(probs.shape[1], dtype=np.float64)
+
+
+def scores_to_preds(scores: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
+    """4 cut-points → 5 classes."""
+    return np.digitize(scores, thresholds).astype(np.int64)
+
+
+def optimize_thresholds(
+    scores: np.ndarray,
+    labels: np.ndarray,
+    n_candidates: int = 300,
+    n_passes: int = 5,
+) -> tuple[np.ndarray, float]:
+    """
+    Finds 4 cut-points on the continuous score that maximize QWK, via
+    coordinate ascent over score quantiles (robust for the piecewise-
+    constant QWK surface, unlike gradient-based solvers).
+
+    ⚠ Tuning on val and reporting on the same val is slightly optimistic.
+    With only 4 parameters on ~700 samples the bias is small, but for a
+    truly honest number, apply the tuned thresholds to an untouched test set.
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    labels = np.asarray(labels)
+
+    candidates = np.unique(
+        np.quantile(scores, np.linspace(0.01, 0.99, n_candidates))
+    )
+
+    def qwk(th: np.ndarray) -> float:
+        preds = scores_to_preds(scores, np.sort(th))
+        return cohen_kappa_score(labels, preds, weights="quadratic")
+
+    starts = [
+        np.array([0.5, 1.5, 2.5, 3.5]),
+        np.quantile(scores, [0.30, 0.55, 0.78, 0.92]),
+        np.quantile(scores, [0.20, 0.45, 0.70, 0.90]),
+    ]
+
+    best_th, best_qwk = np.sort(starts[0]), -np.inf
+    for start in starts:
+        th  = np.asarray(start, dtype=np.float64).copy()
+        cur = qwk(th)
+        for _ in range(n_passes):
+            improved = False
+            for j in range(4):
+                best_c, best_v = th[j], cur
+                for c in candidates:
+                    trial = th.copy()
+                    trial[j] = c
+                    v = qwk(trial)
+                    if v > best_v:
+                        best_v, best_c = v, c
+                if best_c != th[j]:
+                    th[j] = best_c
+                    cur   = best_v
+                    improved = True
+            if not improved:
+                break
+        if cur > best_qwk:
+            best_qwk, best_th = cur, np.sort(th)
+
+    return best_th, best_qwk
+
+
+@torch.no_grad()
+def predict_probs(
+    model: RetinopathyModel,
+    loader: DataLoader,
+    device: torch.device,
+    tta: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Returns (probs [N,5], labels [N]).
+    tta=True: averages logits over 4 views — identity, hflip, vflip, rot90.
+    These views match train-time augmentations, so no train/test mismatch.
+    """
+    model.eval()
+    all_probs, all_labels = [], []
+
+    for images, labels in loader:
+        images = images.to(device, non_blocking=True)
+        with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+            logits = model(images).float()
+            if tta:
+                logits = logits \
+                    + model(torch.flip(images, dims=[3])).float() \
+                    + model(torch.flip(images, dims=[2])).float() \
+                    + model(torch.rot90(images, k=1, dims=[2, 3])).float()
+                logits = logits / 4.0
+        all_probs.append(torch.softmax(logits, dim=1).cpu().numpy())
+        all_labels.append(labels.numpy())
+
+    return np.concatenate(all_probs), np.concatenate(all_labels)
 # ──────────────────────────────────────────────────────────────
 # Early Stopping
 # ──────────────────────────────────────────────────────────────
@@ -547,8 +659,8 @@ def validate(
 ) -> tuple[float, dict]:
     model.eval()
     running_loss = 0.0
-    all_preds    = []
-    all_labels   = []
+    all_probs = []  # ✅ ذخیره احتمالات به جای preds
+    all_labels = []
 
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
@@ -556,15 +668,31 @@ def validate(
 
         with torch.amp.autocast("cuda", enabled=device.type == "cuda"):
             logits = model(images)
-            loss   = loss_fn(logits, labels)
+            loss = loss_fn(logits, labels)
 
         running_loss += loss.item() * images.size(0)
-        preds = torch.argmax(logits, dim=1)
-        all_preds.extend(preds.cpu().numpy())
+        
+        # ✅ ذخیره احتمالات
+        probs = torch.softmax(logits, dim=1)
+        all_probs.append(probs.cpu().numpy())
         all_labels.extend(labels.cpu().numpy())
 
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.array(all_labels)
+    
+    # ✅ تبدیل به Expected Value
+    scores = probs_to_scores(all_probs)
+    
+    # ✅ استفاده از آستانه‌های ثابت (سریع و کارآمد)
+    thresholds = np.array([0.5, 1.5, 2.5, 3.5])
+    preds = scores_to_preds(scores, thresholds)
+    
     val_loss = running_loss / len(loader.dataset)
-    metrics  = compute_metrics(np.array(all_preds), np.array(all_labels), print_report=print_report)
+    metrics = compute_metrics(preds, all_labels, print_report=print_report)
+    
+    # ✅ چاپ QWK Ordinal در لاگ
+    print(f"  [Validate] Ordinal QWK: {metrics['qwk']:.4f} | Argmax QWK: {cohen_kappa_score(all_labels, all_probs.argmax(axis=1), weights='quadratic'):.4f}")
+    
     return val_loss, metrics
 
 
@@ -719,17 +847,41 @@ def train(
 def final_evaluation(
     model: RetinopathyModel,
     val_loader: DataLoader,
-    loss_fn: nn.Module,
+    loss_fn: nn.Module,               # kept for API compatibility (unused)
     device: torch.device,
-) -> dict:
-    print("\n── Final Evaluation on Validation Set ─────────────────")
-    val_loss, metrics = validate(model, val_loader, loss_fn, device, print_report=True)
-    print(f"\n  QWK       : {metrics['qwk']:.4f}")
-    print(f"  Accuracy  : {metrics['accuracy']:.4f}")
-    print(f"  F1 (macro): {metrics['f1']:.4f}")
-    print(f"  Val Loss  : {val_loss:.4f}")
-    return metrics
+    tta: bool = True,
+    thresholds: np.ndarray = None,
+    tune_thresholds: bool = True,
+) -> tuple[dict, np.ndarray]:
+    """
+    Compares the old decision rule (argmax) with the new ordinal rule
+    (expected score + tuned thresholds), optionally with TTA.
+    Returns (metrics, thresholds) so thresholds can be saved and reused.
+    """
+    probs, labels = predict_probs(model, val_loader, device, tta=tta)
+    scores = probs_to_scores(probs)
 
+    argmax_qwk = cohen_kappa_score(
+        labels, probs.argmax(axis=1), weights="quadratic"
+    )
+
+    if thresholds is None and tune_thresholds:
+        thresholds, _ = optimize_thresholds(scores, labels)
+        print(f"  [Ordinal] Tuned thresholds: {np.round(thresholds, 3)}")
+    elif thresholds is None:
+        thresholds = np.array([0.5, 1.5, 2.5, 3.5])
+
+    preds   = scores_to_preds(scores, thresholds)
+    metrics = compute_metrics(preds, labels, print_report=True)
+
+    print("\n── Final Evaluation ───────────────────────────────────")
+    print(f"  TTA                : {'on (4 views)' if tta else 'off'}")
+    print(f"  QWK (argmax, old)  : {argmax_qwk:.4f}")
+    print(f"  QWK (ordinal, new) : {metrics['qwk']:.4f}")
+    print(f"  Accuracy / F1 macro: {metrics['accuracy']:.4f} / {metrics['f1']:.4f}")
+    if tune_thresholds and thresholds is not None:
+        print("  ⚠ thresholds tuned on this same split — small optimistic bias.")
+    return metrics, thresholds
 
 # ──────────────────────────────────────────────────────────────
 # Inference
@@ -738,15 +890,23 @@ def final_evaluation(
 def predict_clinical(
     model: RetinopathyModel,
     image_tensor: torch.Tensor,
-    device: torch.device
+    device: torch.device,
+    thresholds: np.ndarray = None,   # ✅ آستانه‌های تیون‌شده روی val را اینجا پاس بده
 ) -> dict:
     model.eval()
     with torch.no_grad():
         x      = image_tensor.unsqueeze(0).to(device)
         logits = model(x)
         probs  = torch.softmax(logits, dim=1)
-        grade  = torch.argmax(probs, dim=1).item()
-        conf   = probs[0][grade].item()
+
+        if thresholds is not None:
+            score = float(probs_to_scores(probs.cpu().numpy())[0])
+            grade = int(np.digitize(score, thresholds))
+        else:
+            grade = torch.argmax(probs, dim=1).item()
+
+        conf = probs[0][grade].item()
+
     return {
         "grade":      grade,
         "clinical":   GRADE_TO_CLINICAL[grade],

@@ -51,13 +51,13 @@ ACCUMULATION_STEPS  = 2
 
 EPOCHS              = 15
 
-ES_PATIENCE         = 7
+ES_PATIENCE         = 10
 
-LEARNING_RATE       = 1e-3
+LEARNING_RATE       = 3e-4
 
 WEIGHT_DECAY        = 0.0001
 
-DROPOUT             = 0.3
+DROPOUT             = 0.4
 
 # ✅ تغییر سدلر به plateau و حذف وارم‌آپ برای فاز یک
 SCHEDULER_TYPE      = "plateau"
@@ -106,7 +106,7 @@ def main():
     model = RetinopathyModel(num_classes=5, dropout=DROPOUT).to(device)
     
     # ✅ وزن‌ها رو به تابع لاس نمیدیم چون سامپلر داره توی دیتالوادر کار بالانس رو انجام میده
-    loss_fn = get_loss_fn(class_weights=None, alpha=0.5).to(device)
+    loss_fn = get_loss_fn(class_weights=None, alpha=0.7, label_smoothing=0.05).to(device)
 
     freeze_backbone(model)
     model_summary(model)
